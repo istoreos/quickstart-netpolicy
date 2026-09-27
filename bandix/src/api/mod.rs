@@ -253,19 +253,31 @@ impl ApiRouter {
             return Ok(self.with_policy_engine(|engine| engine.inspect()));
         }
         if request.path == "/api/v1/policies/plan" && request.method == "POST" {
-            let mutation: crate::policy::PolicyMutationRequest = parse_json_body(request)?;
+            let mutation: crate::policy::PolicyMutationRequest = match parse_json_body(request) {
+                Ok(value) => value,
+                Err(error) => return Ok(json_bad_request(error)),
+            };
             return Ok(self.with_policy_engine(|engine| engine.plan(&mutation)));
         }
         if request.path == "/api/v1/policies/apply" && request.method == "POST" {
-            let payload: PolicyApplyRequest = parse_json_body(request)?;
+            let payload: PolicyApplyRequest = match parse_json_body(request) {
+                Ok(value) => value,
+                Err(error) => return Ok(json_bad_request(error)),
+            };
             return Ok(self.with_policy_engine(|engine| engine.apply(&payload.plan, &payload.request)));
         }
         if request.path == "/api/v1/policies/verify" && request.method == "POST" {
-            let snapshot: crate::policy::PolicySnapshot = parse_json_body(request)?;
+            let snapshot: crate::policy::PolicySnapshot = match parse_json_body(request) {
+                Ok(value) => value,
+                Err(error) => return Ok(json_bad_request(error)),
+            };
             return Ok(self.with_policy_engine(|engine| engine.verify(&snapshot).map(|_| snapshot)));
         }
         if request.path == "/api/v1/policies/rollback" && request.method == "POST" {
-            let payload: PolicyRollbackRequest = parse_json_body(request)?;
+            let payload: PolicyRollbackRequest = match parse_json_body(request) {
+                Ok(value) => value,
+                Err(error) => return Ok(json_bad_request(error)),
+            };
             return Ok(self.with_policy_engine(|engine| engine.rollback(payload.revision)));
         }
 
@@ -313,6 +325,10 @@ fn parse_json_body<T: for<'de> Deserialize<'de>>(request: &HttpRequest) -> Resul
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("request body is required"))?;
     serde_json::from_str(body).map_err(Into::into)
+}
+
+fn json_bad_request(error: anyhow::Error) -> HttpResponse {
+    HttpResponse::error(400, format!("invalid JSON request body: {}", error))
 }
 
 fn policy_error_response(error: crate::policy::PolicyError) -> HttpResponse {
@@ -474,6 +490,21 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&plan.body).unwrap()["data"]["nextRevision"],
             8
         );
+    }
+
+    #[tokio::test]
+    async fn policy_routes_report_malformed_json_as_bad_request() {
+        let response = ApiRouter::new()
+            .route_request(&HttpRequest {
+                method: "POST".to_string(),
+                path: "/api/v1/policies/plan".to_string(),
+                query_params: HashMap::new(),
+                body: Some("{".to_string()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.status, 400);
+        assert!(response.body.contains("invalid JSON request body"));
     }
 }
 

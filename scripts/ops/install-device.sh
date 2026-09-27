@@ -33,7 +33,9 @@ fi
 current="$(readlink "$base/current" 2>/dev/null || true)"
 [ -z "$current" ] || ln -sfn "$current" "$base/previous"
 ln -sfn "$release" "$base/current.next"
-mv -f "$base/current.next" "$base/current"
+# BusyBox mv follows a destination symlink to a directory unless -T is used.
+# Without -T, upgrades report success but leave the old release active.
+mv -fT "$base/current.next" "$base/current"
 /etc/init.d/quickstart-netpolicy enable
 /etc/init.d/quickstart-netpolicy restart
 printf 'install=pass release=%s previous=%s\n' "$release" "${current:-none}"

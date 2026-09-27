@@ -874,11 +874,13 @@ fn start_neighbor_flush_task(iface: String, interval_secs: u64, shutdown_notify:
 }
 
 // 运行服务
-async fn run_service(options: &Options) -> Result<(), anyhow::Error> {
+async fn run_service(options: &Options, _engine_lease: crate::engine_guard::EngineLease) -> Result<(), anyhow::Error> {
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_clone = shutdown_notify.clone();
     let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_flag_clone = shutdown_flag.clone();
+
+    let conflict_monitor = crate::engine_guard::start_conflict_monitor(options.iface().to_string(), shutdown_notify.clone());
 
     tokio::spawn(async move {
         if signal::ctrl_c().await.is_ok() {
@@ -941,6 +943,7 @@ async fn run_service(options: &Options) -> Result<(), anyhow::Error> {
     tasks.push(web_task);
     tasks.push(hostname_refresh_task);
     tasks.push(device_refresh_task);
+    tasks.push(conflict_monitor);
 
     if options.enable_traffic() && options.traffic_neighbor_flush_enable() {
         let neighbor_flush_task = start_neighbor_flush_task(
@@ -1000,10 +1003,11 @@ pub async fn run(options: Options) -> Result<(), anyhow::Error> {
     }
 
     if options.enable_traffic() || options.enable_dns() {
-        crate::engine_guard::ensure_interface_is_not_owned_by_bandix(options.iface())?;
+        crate::engine_guard::ensure_no_external_engine(options.iface())?;
     }
 
-    run_service(&options).await?;
+    let engine_lease = crate::engine_guard::EngineLease::acquire(options.iface())?;
+    run_service(&options, engine_lease).await?;
 
     Ok(())
 }

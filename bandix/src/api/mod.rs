@@ -4,6 +4,7 @@ pub mod traffic;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Instant;
 use tokio::net::TcpStream;
 
 /// API 响应结构
@@ -116,6 +117,7 @@ impl ApiHandler {
 #[derive(Clone)]
 pub struct ApiRouter {
     handlers: HashMap<String, ApiHandler>,
+    started_at: Instant,
 }
 
 #[derive(Serialize)]
@@ -131,9 +133,28 @@ struct EngineCapabilities {
     protocol_compatibility: Vec<&'static str>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineHealthDocument {
+    state: &'static str,
+    pid: u32,
+    uptime_seconds: u64,
+    resident_memory_kib: Option<u64>,
+    data_plane: &'static str,
+    policy_interface_version: &'static str,
+    max_device_policies: usize,
+    max_http_connections: usize,
+    dns_storage_default: bool,
+    traffic_storage_default: bool,
+    reasons: Vec<String>,
+}
+
 impl ApiRouter {
     pub fn new() -> Self {
-        Self { handlers: HashMap::new() }
+        Self {
+            handlers: HashMap::new(),
+            started_at: Instant::now(),
+        }
     }
 
     /// Register an API handler for a module
@@ -162,6 +183,26 @@ impl ApiRouter {
             }))?;
             return Ok(HttpResponse::ok(body));
         }
+        if request.path == "/api/v1/system/health" {
+            if request.method != "GET" {
+                return Ok(HttpResponse::error(405, "Method not allowed".to_string()));
+            }
+            let data_plane = if self.handlers.contains_key("traffic") { "ready" } else { "disabled" };
+            let body = serde_json::to_string(&ApiResponse::success(EngineHealthDocument {
+                state: "healthy",
+                pid: std::process::id(),
+                uptime_seconds: self.started_at.elapsed().as_secs(),
+                resident_memory_kib: resident_memory_kib(),
+                data_plane,
+                policy_interface_version: crate::policy::POLICY_INTERFACE_VERSION,
+                max_device_policies: crate::policy::MAX_DEVICE_POLICIES,
+                max_http_connections: crate::web::MAX_CONNECTIONS,
+                dns_storage_default: false,
+                traffic_storage_default: false,
+                reasons: Vec::new(),
+            }))?;
+            return Ok(HttpResponse::ok(body));
+        }
 
         // Try to find a handler that supports this route
         for handler in self.handlers.values() {
@@ -175,6 +216,17 @@ impl ApiRouter {
         // No handler found
         Ok(HttpResponse::not_found())
     }
+}
+
+fn resident_memory_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
@@ -196,6 +248,23 @@ mod tests {
         assert_eq!(document["data"]["product"], "quickstart-netpolicy");
         assert_eq!(document["data"]["interfaceVersion"], "1");
         assert_eq!(document["data"]["engine"], "quickstart-native");
+    }
+
+    #[tokio::test]
+    async fn health_route_exposes_bounded_runtime_defaults() {
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            path: "/api/v1/system/health".to_string(),
+            query_params: HashMap::new(),
+            body: None,
+        };
+        let response = ApiRouter::new().route_request(&request).await.unwrap();
+        let document: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(document["data"]["state"], "healthy");
+        assert_eq!(document["data"]["maxDevicePolicies"], 1024);
+        assert_eq!(document["data"]["maxHttpConnections"], 32);
+        assert_eq!(document["data"]["dnsStorageDefault"], false);
+        assert_eq!(document["data"]["trafficStorageDefault"], false);
     }
 }
 
@@ -258,8 +327,12 @@ pub async fn send_http_response(stream: &mut TcpStream, response: &HttpResponse)
     let status_text = match response.status {
         200 => "OK",
         400 => "BAD REQUEST",
+        405 => "METHOD NOT ALLOWED",
+        408 => "REQUEST TIMEOUT",
+        413 => "CONTENT TOO LARGE",
         404 => "Not Found",
         500 => "INTERNAL SERVER ERROR",
+        503 => "SERVICE UNAVAILABLE",
         _ => "UNKNOWN",
     };
 

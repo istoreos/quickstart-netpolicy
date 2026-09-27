@@ -153,7 +153,7 @@ impl ApiRouter {
             let body = serde_json::to_string(&ApiResponse::success(EngineCapabilities {
                 product: "quickstart-netpolicy",
                 version: env!("CARGO_PKG_VERSION"),
-                interface_version: "1",
+                interface_version: crate::policy::POLICY_INTERFACE_VERSION,
                 engine: "quickstart-native",
                 lineage: "bandix-v0.12.10",
                 data_plane: "ebpf-tc",

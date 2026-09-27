@@ -33,6 +33,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 comfy-table = { workspace = true }
 chrono = { workspace = true }
+crc32fast = { workspace = true }
 trust-dns-proto = { workspace = true }
 reqwest = { workspace = true }
 

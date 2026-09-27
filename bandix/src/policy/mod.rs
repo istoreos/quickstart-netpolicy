@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod store;
+
 pub const POLICY_INTERFACE_VERSION: &str = "1";
 pub const MAX_DEVICE_POLICIES: usize = 1024;
 pub const MAX_RATE_BITS_PER_SECOND: u64 = 100_000_000_000;

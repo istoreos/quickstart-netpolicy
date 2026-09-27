@@ -1,7 +1,7 @@
 use super::store::{LoadSource, PolicyStore};
 use super::{
-    validate_mutation_request, DevicePolicyInput, EffectiveState, EngineHealth, EngineHealthState, PolicyChange, PolicyChangeKind,
-    PolicyError, PolicyErrorCode, PolicyMutationRequest, PolicyPlan, PolicySnapshot, PolicySource, StoredDevicePolicy, TrafficPolicyEngine,
+    validate_mutation_request, EffectiveState, EngineHealth, EngineHealthState, PolicyChange, PolicyChangeKind, PolicyError,
+    PolicyErrorCode, PolicyMutationRequest, PolicyPlan, PolicySnapshot, PolicySource, StoredDevicePolicy, TrafficPolicyEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -355,7 +355,7 @@ fn rollback_error(message: impl Into<String>) -> PolicyError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{DeviceIdentity, PolicyOwner, RateLimitPolicy};
+    use crate::policy::{DeviceIdentity, DevicePolicyInput, PolicyOwner, RateLimitPolicy};
     use std::cell::Cell;
     use std::rc::Rc;
 

@@ -50,6 +50,7 @@ Cargo.lock
 # End of https://www.toptal.com/developers/gitignore/api/rust,visualstudiocode
 
 release/
+dist/
 release_readme.md
 upload_release.sh
 

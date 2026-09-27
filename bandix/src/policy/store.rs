@@ -108,6 +108,18 @@ impl PolicyStore {
         sync_directory(parent)?;
         Ok(())
     }
+
+    pub fn restore(&self, snapshot: &PolicySnapshot) -> Result<(), PolicyError> {
+        validate_snapshot(snapshot)?;
+        let parent = self
+            .primary
+            .parent()
+            .ok_or_else(|| storage_error("policy path has no parent"))?;
+        fs::create_dir_all(parent).map_err(|error| storage_error(format!("create policy directory: {}", error)))?;
+        write_snapshot_file(&self.temporary, snapshot)?;
+        fs::rename(&self.temporary, &self.primary).map_err(|error| storage_error(format!("restore policy file: {}", error)))?;
+        sync_directory(parent)
+    }
 }
 
 fn write_snapshot_file(path: &Path, snapshot: &PolicySnapshot) -> Result<(), PolicyError> {

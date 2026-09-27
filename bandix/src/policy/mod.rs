@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub mod store;
+pub mod transaction;
 
 pub const POLICY_INTERFACE_VERSION: &str = "1";
 pub const MAX_DEVICE_POLICIES: usize = 1024;

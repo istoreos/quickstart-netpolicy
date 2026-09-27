@@ -162,6 +162,7 @@ impl TrafficQuotaManager {
         !was_blocked && quota_exceeded(&quota, usage)
     }
 
+    #[allow(dead_code)]
     pub fn blocked_macs(&mut self, now: &DateTime<Local>) -> HashSet<[u8; 6]> {
         let macs: Vec<[u8; 6]> = self.quotas.keys().copied().collect();
         let mut blocked = HashSet::new();

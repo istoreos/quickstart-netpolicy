@@ -125,6 +125,12 @@ impl<D: PolicyDataPlane> NativePolicyEngine<D> {
                 current = record.before.clone();
             }
         }
+        data_plane
+            .apply(&current)
+            .map_err(|error| unavailable(format!("reconcile persisted policy: {}", error)))?;
+        data_plane
+            .verify(&current)
+            .map_err(|error| unavailable(format!("verify persisted policy: {}", error)))?;
         Ok(Self {
             store,
             journal,
@@ -452,7 +458,7 @@ mod tests {
         let plan = engine.plan(&request).unwrap();
         assert_eq!(engine.apply(&plan, &request).unwrap().revision, 1);
         assert_eq!(engine.apply(&plan, &request).unwrap().revision, 1);
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.get(), 2);
         fs::remove_dir_all(path).unwrap();
     }
 
@@ -465,11 +471,11 @@ mod tests {
                 &path,
                 FakeDataPlane {
                     restore_calls: restores.clone(),
-                    fail_apply: !fail_verify,
-                    fail_verify,
                     ..Default::default()
                 },
             );
+            engine.data_plane.fail_apply = !fail_verify;
+            engine.data_plane.fail_verify = fail_verify;
             let request = request(0, if fail_verify { "verify" } else { "apply" });
             let plan = engine.plan(&request).unwrap();
             assert!(engine.apply(&plan, &request).is_err());

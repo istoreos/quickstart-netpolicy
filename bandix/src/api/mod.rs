@@ -4,6 +4,7 @@ pub mod traffic;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::net::TcpStream;
 
@@ -118,7 +119,10 @@ impl ApiHandler {
 pub struct ApiRouter {
     handlers: HashMap<String, ApiHandler>,
     started_at: Instant,
+    policy_engine: Option<SharedPolicyEngine>,
 }
+
+pub type SharedPolicyEngine = Arc<Mutex<Box<dyn crate::policy::TrafficPolicyEngine + Send>>>;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,12 +153,36 @@ struct EngineHealthDocument {
     reasons: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyApplyRequest {
+    plan: crate::policy::PolicyPlan,
+    request: crate::policy::PolicyMutationRequest,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyRollbackRequest {
+    revision: u64,
+}
+
+#[derive(Serialize)]
+struct PolicyErrorEnvelope {
+    status: &'static str,
+    error: crate::policy::PolicyError,
+}
+
 impl ApiRouter {
     pub fn new() -> Self {
         Self {
             handlers: HashMap::new(),
             started_at: Instant::now(),
+            policy_engine: None,
         }
+    }
+
+    pub fn set_policy_engine(&mut self, engine: SharedPolicyEngine) {
+        self.policy_engine = Some(engine);
     }
 
     /// Register an API handler for a module
@@ -187,9 +215,27 @@ impl ApiRouter {
             if request.method != "GET" {
                 return Ok(HttpResponse::error(405, "Method not allowed".to_string()));
             }
-            let data_plane = if self.handlers.contains_key("traffic") { "ready" } else { "disabled" };
+            let (state, data_plane, reasons) = match &self.policy_engine {
+                Some(engine) => match engine.lock() {
+                    Ok(engine) => {
+                        let health = engine.health();
+                        let state = match health.state {
+                            crate::policy::EngineHealthState::Healthy => "healthy",
+                            crate::policy::EngineHealthState::Degraded => "degraded",
+                            crate::policy::EngineHealthState::Unavailable => "unavailable",
+                            crate::policy::EngineHealthState::Conflict => "conflict",
+                        };
+                        (state, "ready", health.reasons)
+                    }
+                    Err(_) => ("unavailable", "unavailable", vec!["policy engine lock is poisoned".to_string()]),
+                },
+                None if self.handlers.contains_key("traffic") => {
+                    ("degraded", "initializing", vec!["policy engine is not initialized".to_string()])
+                }
+                None => ("healthy", "disabled", Vec::new()),
+            };
             let body = serde_json::to_string(&ApiResponse::success(EngineHealthDocument {
-                state: "healthy",
+                state,
                 pid: std::process::id(),
                 uptime_seconds: self.started_at.elapsed().as_secs(),
                 resident_memory_kib: resident_memory_kib(),
@@ -199,9 +245,28 @@ impl ApiRouter {
                 max_http_connections: crate::web::MAX_CONNECTIONS,
                 dns_storage_default: false,
                 traffic_storage_default: false,
-                reasons: Vec::new(),
+                reasons,
             }))?;
             return Ok(HttpResponse::ok(body));
+        }
+        if request.path == "/api/v1/policies" && request.method == "GET" {
+            return Ok(self.with_policy_engine(|engine| engine.inspect()));
+        }
+        if request.path == "/api/v1/policies/plan" && request.method == "POST" {
+            let mutation: crate::policy::PolicyMutationRequest = parse_json_body(request)?;
+            return Ok(self.with_policy_engine(|engine| engine.plan(&mutation)));
+        }
+        if request.path == "/api/v1/policies/apply" && request.method == "POST" {
+            let payload: PolicyApplyRequest = parse_json_body(request)?;
+            return Ok(self.with_policy_engine(|engine| engine.apply(&payload.plan, &payload.request)));
+        }
+        if request.path == "/api/v1/policies/verify" && request.method == "POST" {
+            let snapshot: crate::policy::PolicySnapshot = parse_json_body(request)?;
+            return Ok(self.with_policy_engine(|engine| engine.verify(&snapshot).map(|_| snapshot)));
+        }
+        if request.path == "/api/v1/policies/rollback" && request.method == "POST" {
+            let payload: PolicyRollbackRequest = parse_json_body(request)?;
+            return Ok(self.with_policy_engine(|engine| engine.rollback(payload.revision)));
         }
 
         // Try to find a handler that supports this route
@@ -215,6 +280,52 @@ impl ApiRouter {
 
         // No handler found
         Ok(HttpResponse::not_found())
+    }
+
+    fn with_policy_engine<T: Serialize>(
+        &self,
+        operation: impl FnOnce(&mut dyn crate::policy::TrafficPolicyEngine) -> Result<T, crate::policy::PolicyError>,
+    ) -> HttpResponse {
+        let Some(engine) = &self.policy_engine else {
+            return policy_error_response(crate::policy::PolicyError {
+                code: crate::policy::PolicyErrorCode::Unavailable,
+                message: "policy engine is unavailable".to_string(),
+                field: None,
+            });
+        };
+        let Ok(mut engine) = engine.lock() else {
+            return policy_error_response(crate::policy::PolicyError {
+                code: crate::policy::PolicyErrorCode::Unavailable,
+                message: "policy engine lock is poisoned".to_string(),
+                field: None,
+            });
+        };
+        match operation(engine.as_mut()) {
+            Ok(value) => HttpResponse::ok(serde_json::to_string(&ApiResponse::success(value)).unwrap_or_default()),
+            Err(error) => policy_error_response(error),
+        }
+    }
+}
+
+fn parse_json_body<T: for<'de> Deserialize<'de>>(request: &HttpRequest) -> Result<T, anyhow::Error> {
+    let body = request
+        .body
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("request body is required"))?;
+    serde_json::from_str(body).map_err(Into::into)
+}
+
+fn policy_error_response(error: crate::policy::PolicyError) -> HttpResponse {
+    let status = match error.code {
+        crate::policy::PolicyErrorCode::ValidationFailed | crate::policy::PolicyErrorCode::CapacityExceeded => 400,
+        crate::policy::PolicyErrorCode::RevisionConflict | crate::policy::PolicyErrorCode::Conflict => 409,
+        crate::policy::PolicyErrorCode::Unavailable => 503,
+        crate::policy::PolicyErrorCode::VerificationFailed | crate::policy::PolicyErrorCode::RollbackFailed => 500,
+    };
+    HttpResponse {
+        status,
+        content_type: "application/json".to_string(),
+        body: serde_json::to_string(&PolicyErrorEnvelope { status: "error", error }).unwrap_or_default(),
     }
 }
 
@@ -232,6 +343,53 @@ fn resident_memory_kib() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct StubPolicyEngine;
+
+    impl crate::policy::TrafficPolicyEngine for StubPolicyEngine {
+        fn inspect(&self) -> Result<crate::policy::PolicySnapshot, crate::policy::PolicyError> {
+            Ok(crate::policy::PolicySnapshot {
+                schema_version: 1,
+                revision: 7,
+                policies: Vec::new(),
+            })
+        }
+
+        fn plan(&self, request: &crate::policy::PolicyMutationRequest) -> Result<crate::policy::PolicyPlan, crate::policy::PolicyError> {
+            Ok(crate::policy::PolicyPlan {
+                id: "plan-1".to_string(),
+                base_revision: request.expected_revision,
+                next_revision: request.expected_revision + 1,
+                changes: Vec::new(),
+                warnings: Vec::new(),
+            })
+        }
+
+        fn apply(
+            &mut self,
+            _plan: &crate::policy::PolicyPlan,
+            _request: &crate::policy::PolicyMutationRequest,
+        ) -> Result<crate::policy::PolicySnapshot, crate::policy::PolicyError> {
+            self.inspect()
+        }
+
+        fn verify(&self, _snapshot: &crate::policy::PolicySnapshot) -> Result<(), crate::policy::PolicyError> {
+            Ok(())
+        }
+
+        fn rollback(&mut self, _revision: u64) -> Result<crate::policy::PolicySnapshot, crate::policy::PolicyError> {
+            self.inspect()
+        }
+
+        fn health(&self) -> crate::policy::EngineHealth {
+            crate::policy::EngineHealth {
+                state: crate::policy::EngineHealthState::Healthy,
+                interface: "br-lan".to_string(),
+                revision: 7,
+                reasons: Vec::new(),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn capability_route_identifies_independent_engine() {
@@ -265,6 +423,57 @@ mod tests {
         assert_eq!(document["data"]["maxHttpConnections"], 32);
         assert_eq!(document["data"]["dnsStorageDefault"], false);
         assert_eq!(document["data"]["trafficStorageDefault"], false);
+    }
+
+    #[tokio::test]
+    async fn policy_route_reports_stable_unavailable_error_without_engine() {
+        let response = ApiRouter::new()
+            .route_request(&HttpRequest {
+                method: "GET".to_string(),
+                path: "/api/v1/policies".to_string(),
+                query_params: HashMap::new(),
+                body: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.status, 503);
+        assert!(response.body.contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn policy_routes_expose_the_transaction_engine() {
+        let mut router = ApiRouter::new();
+        router.set_policy_engine(Arc::new(Mutex::new(Box::new(StubPolicyEngine))));
+        let inspect = router
+            .route_request(&HttpRequest {
+                method: "GET".to_string(),
+                path: "/api/v1/policies".to_string(),
+                query_params: HashMap::new(),
+                body: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&inspect.body).unwrap()["data"]["revision"],
+            7
+        );
+
+        let plan = router
+            .route_request(&HttpRequest {
+                method: "POST".to_string(),
+                path: "/api/v1/policies/plan".to_string(),
+                query_params: HashMap::new(),
+                body: Some(
+                    r#"{"expectedRevision":7,"idempotencyKey":"key","owner":{"product":"quickstart","instance":"local"},"policies":[]}"#
+                        .to_string(),
+                ),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&plan.body).unwrap()["data"]["nextRevision"],
+            8
+        );
     }
 }
 
@@ -328,6 +537,7 @@ pub async fn send_http_response(stream: &mut TcpStream, response: &HttpResponse)
         200 => "OK",
         400 => "BAD REQUEST",
         405 => "METHOD NOT ALLOWED",
+        409 => "CONFLICT",
         408 => "REQUEST TIMEOUT",
         413 => "CONTENT TOO LARGE",
         404 => "Not Found",

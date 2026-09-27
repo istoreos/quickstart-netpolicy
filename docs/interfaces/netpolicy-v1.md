@@ -26,6 +26,15 @@ The internal `TrafficPolicyEngine` interface exposes six operations:
 
 Callers never manipulate eBPF maps, TC handles or persistence files directly.
 
+## HTTP binding
+
+- `GET /api/v1/policies` — inspect the current snapshot.
+- `POST /api/v1/policies/plan` — validate and plan a mutation without writes.
+- `POST /api/v1/policies/apply` — apply `{ "plan": ..., "request": ... }`.
+- `POST /api/v1/policies/verify` — verify a supplied snapshot against the data plane.
+- `POST /api/v1/policies/rollback` — roll back `{ "revision": N }`.
+- `GET /api/v1/system/health` — machine-readable engine health.
+
 ## Mutation example
 
 ```json

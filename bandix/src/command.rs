@@ -923,8 +923,27 @@ async fn run_service(options: &Options, _engine_lease: crate::engine_guard::Engi
     let mut monitor_manager = MonitorManager::from_contexts(&module_contexts);
     monitor_manager.init_modules(&module_contexts).await?;
 
+    let policy_engine = module_contexts.iter().find_map(|context| match context {
+        ModuleContext::Traffic(traffic) => traffic.ingress_ebpf.as_ref().map(|ebpf| {
+            let backend = crate::policy::dataplane::AyaKernelPolicyBackend::new(Arc::clone(ebpf));
+            let data_plane = crate::policy::dataplane::NativeDataPlane::new(backend, [subnet_info.interface_mac]);
+            crate::policy::transaction::NativePolicyEngine::open(
+                crate::policy::store::PolicyStore::new(options.data_dir()),
+                crate::policy::transaction::TransactionJournal::new(options.data_dir()),
+                data_plane,
+                options.iface(),
+            )
+        }),
+        _ => None,
+    });
+
     // 启动 Web 服务器
-    let api_router = monitor_manager.get_api_router().clone();
+    let mut api_router = monitor_manager.get_api_router().clone();
+    if let Some(engine) = policy_engine {
+        api_router.set_policy_engine(Arc::new(Mutex::new(
+            Box::new(engine?) as Box<dyn crate::policy::TrafficPolicyEngine + Send>
+        )));
+    }
     let options_for_web = options.clone();
     let shutdown_notify_for_web = shutdown_notify.clone();
     let web_task = tokio::spawn(async move {

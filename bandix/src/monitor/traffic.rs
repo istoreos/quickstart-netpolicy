@@ -100,18 +100,12 @@ impl TrafficMonitor {
             }
         };
 
-        let traffic_data = match self.process_traffic_data(ctx, &ingress_ebpf).await {
-            Ok(traffic_data) => Some(traffic_data),
-            Err(e) => {
-                log::error!("Failed to process traffic data: {}", e);
-                None
-            }
-        };
-
-        // 检测是否要应用限速规则
-        if let Err(e) = self.apply_rate_limits(ctx, &ingress_ebpf, traffic_data.as_ref()) {
-            log::error!("Failed to update rate limits: {}", e);
+        if let Err(e) = self.process_traffic_data(ctx, &ingress_ebpf).await {
+            log::error!("Failed to process traffic data: {}", e);
         }
+
+        // Policy maps are reconciled transactionally by NativePolicyEngine.
+        // The historical scheduler must not overwrite the same QSNP maps.
 
         let now_ts_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -443,6 +437,7 @@ impl TrafficMonitor {
         }
     }
 
+    #[allow(dead_code)]
     fn apply_rate_limits(
         &self,
         ctx: &mut TrafficModuleContext,

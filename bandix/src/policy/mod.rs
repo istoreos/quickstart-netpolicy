@@ -30,6 +30,14 @@ pub struct PolicyError {
     pub field: Option<String>,
 }
 
+impl std::fmt::Display for PolicyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:?}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for PolicyError {}
+
 impl PolicyError {
     fn validation(field: impl Into<String>, message: impl Into<String>) -> Self {
         Self {

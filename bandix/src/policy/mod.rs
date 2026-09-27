@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod dataplane;
 pub mod store;
 pub mod transaction;
 
@@ -268,6 +269,16 @@ fn validate_rate_limit(rate: &RateLimitPolicy, index: usize) -> Result<(), Polic
         return Err(PolicyError::validation(
             format!("policies[{}].rateLimit", index),
             "an enabled rate limit requires an upload or download limit",
+        ));
+    }
+    if rate.enabled
+        && [rate.upload_bits_per_second, rate.download_bits_per_second]
+            .into_iter()
+            .any(|value| value > 0 && value < 8)
+    {
+        return Err(PolicyError::validation(
+            format!("policies[{}].rateLimit", index),
+            "a non-zero rate must be at least 8 bits per second",
         ));
     }
     Ok(())

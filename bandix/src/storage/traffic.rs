@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // ------------------------------
 // 共享常量（实时和长期存储都使用）
 // ------------------------------
-const RING_MAGIC: [u8; 4] = *b"BXR1"; // bandix 环形文件魔数
+const RING_MAGIC: [u8; 4] = *b"QNP1"; // Quickstart NetPolicy ring format marker
 const DEFAULT_RING_CAPACITY: u32 = 3600; // 默认环形缓冲区容量（3600个槽位）
 const HEADER_SIZE: usize = 4 /*magic*/ + 4 /*version*/ + 4 /*capacity*/; // 环形文件头部大小（12字节）
 
@@ -274,7 +274,7 @@ impl RealtimeRing {
             if ts == 0 {
                 continue;
             }
-            
+
             // 使用左闭右开区间 [start_ms, end_ms)
             if ts >= start_ms && ts < end_ms {
                 rows.push(MetricsRow {
@@ -378,7 +378,7 @@ impl LongTermRing {
             if end_ts == 0 {
                 continue;
             }
-            
+
             // 只判断时间段的开始时间是否在查询范围内 [start_ms, end_ms)
             // 这样每个时间段归属到它开始的时间点，不论 end_ts 是否跨天
             if start_ts >= start_ms && start_ts < end_ms {
@@ -556,7 +556,7 @@ impl RealtimeRingManager {
                 if ts == 0 {
                     continue;
                 }
-                
+
                 // 使用左闭右开区间 [start_ms, end_ms)
                 if ts >= start_ms && ts < end_ms {
                     let agg = ts_to_agg.entry(ts).or_insert([0u64; SLOT_U64S_REALTIME]);
@@ -1959,7 +1959,7 @@ pub fn load_all_scheduled_limits(base_dir: &str) -> Result<Vec<ScheduledRateLimi
         let time_start_idx = schedule_idx + 1;
         let (start_hour, start_minute) =
             TimeSlot::parse_time(parts[time_start_idx]).with_context(|| format!("invalid start time at line {}", lineno + 1))?;
-        
+
         let end_time_str = parts[time_start_idx + 1];
         let (end_hour, end_minute) = if end_time_str == "24:00" {
             needs_resave = true;
@@ -1967,7 +1967,7 @@ pub fn load_all_scheduled_limits(base_dir: &str) -> Result<Vec<ScheduledRateLimi
         } else {
             TimeSlot::parse_time(end_time_str).with_context(|| format!("invalid end time at line {}", lineno + 1))?
         };
-        
+
         let days_of_week =
             TimeSlot::parse_days(parts[time_start_idx + 2]).with_context(|| format!("invalid days format at line {}", lineno + 1))?;
 

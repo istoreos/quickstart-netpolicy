@@ -4,10 +4,10 @@
 pub mod maps;
 
 use aya_ebpf::{bindings::TC_ACT_UNSPEC, helpers::bpf_ktime_get_ns, programs::TcContext};
-use bandix_common::PacketHeader;
 use core::cmp;
+use quickstart_netpolicy_common::PacketHeader;
 
-use maps::DNS_DATA;
+use maps::QSNP_DNS_DATA;
 
 // Protocol constants
 const DNS_PORT: u16 = 53;
@@ -87,7 +87,7 @@ fn try_handle_dns(ctx: &TcContext, direction: u32) -> Result<i32, ()> {
     let copy_len = cmp::min(len as usize, MAX_PAYLOAD);
 
     // Reserve space in ringbuf
-    let mut entry = match DNS_DATA.reserve::<Record>(0) {
+    let mut entry = match QSNP_DNS_DATA.reserve::<Record>(0) {
         Some(entry) => entry,
         None => {
             // Ringbuf is full, skip this packet

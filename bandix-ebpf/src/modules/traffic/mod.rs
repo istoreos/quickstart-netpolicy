@@ -3,16 +3,16 @@
 
 pub mod maps;
 
-use core::intrinsics::{atomic_xadd, AtomicOrdering};
 use aya_ebpf::{
     bindings::{TC_ACT_SHOT, TC_ACT_UNSPEC},
     programs::TcContext,
 };
+use core::intrinsics::{atomic_xadd, AtomicOrdering};
 use network_types::eth::EthHdr;
 use network_types::ip::{Ipv4Hdr, Ipv6Hdr};
 
-use crate::utils::{get_current_time, is_subnet_ip, is_subnet_ipv6, min, ptr_at, subnet::IPV4_SUBNET_INFO};
-use maps::{MAC_QUOTA_BLOCKED, MAC_QUOTA_THRESHOLDS, MAC_RATE_LIMITS, MAC_TRAFFIC, RATE_BUCKETS};
+use crate::utils::{get_current_time, is_subnet_ip, is_subnet_ipv6, min, ptr_at, subnet::QSNP_IPV4_NET};
+use maps::{QSNP_BUCKETS, QSNP_QUOTA_BLK, QSNP_QUOTA_LIM, QSNP_RATE_LIMIT, QSNP_TRAFFIC};
 
 // ============================================================================
 // Public Entry Points
@@ -110,7 +110,7 @@ fn handle_ipv4(ctx: &TcContext, is_ingress: bool) -> Result<i32, ()> {
 fn is_subnet_configured() -> bool {
     // Check if at least one subnet is configured
     for i in 0..16 {
-        if let Some(subnet_data) = IPV4_SUBNET_INFO.get(i as u32) {
+        if let Some(subnet_data) = QSNP_IPV4_NET.get(i as u32) {
             let enabled = subnet_data[8];
             if enabled != 0 {
                 return true;
@@ -187,7 +187,7 @@ fn handle_ipv6(ctx: &TcContext, is_ingress: bool) -> Result<i32, ()> {
 
 #[inline]
 fn update_traffic_stats(mac: &[u8; 6], data_len: u64, is_rx: bool, is_local: bool) {
-    let traffic = MAC_TRAFFIC.get_ptr_mut(mac);
+    let traffic = QSNP_TRAFFIC.get_ptr_mut(mac);
 
     match traffic {
         Some(t) => unsafe {
@@ -224,7 +224,7 @@ fn update_traffic_stats(mac: &[u8; 6], data_len: u64, is_rx: bool, is_local: boo
                     stats[2] = data_len; // wan  send bytes
                 }
             }
-            let _ = MAC_TRAFFIC.insert(mac, &stats, 0);
+            let _ = QSNP_TRAFFIC.insert(mac, &stats, 0);
         }
     }
 }
@@ -290,7 +290,7 @@ fn should_throttle(mac: &[u8; 6], data_len: u64, limits: (u64, u64), is_rx: bool
         return false; // No limit
     }
 
-    let bucket = RATE_BUCKETS.get_ptr_mut(mac);
+    let bucket = QSNP_BUCKETS.get_ptr_mut(mac);
     match bucket {
         Some(b) => unsafe {
             let now = get_current_time();
@@ -331,12 +331,12 @@ fn should_throttle(mac: &[u8; 6], data_len: u64, limits: (u64, u64), is_rx: bool
             let idx = if is_rx { 0 } else { 1 };
             if bucket_state[idx] < data_len {
                 // Initial tokens insufficient, need to throttle
-                let _ = RATE_BUCKETS.insert(mac, &bucket_state, 0);
+                let _ = QSNP_BUCKETS.insert(mac, &bucket_state, 0);
                 return true;
             }
 
             bucket_state[idx] = bucket_state[idx].saturating_sub(data_len);
-            let _ = RATE_BUCKETS.insert(mac, &bucket_state, 0);
+            let _ = QSNP_BUCKETS.insert(mac, &bucket_state, 0);
             false
         }
     }
@@ -345,7 +345,7 @@ fn should_throttle(mac: &[u8; 6], data_len: u64, limits: (u64, u64), is_rx: bool
 #[inline]
 fn get_rate_limits(mac: &[u8; 6]) -> (u64, u64) {
     unsafe {
-        let limits = MAC_RATE_LIMITS.get(mac);
+        let limits = QSNP_RATE_LIMIT.get(mac);
         match limits {
             Some(limit) => (limit[0], limit[1]), // [rx_limit, tx_limit]
             None => (0, 0),
@@ -356,7 +356,7 @@ fn get_rate_limits(mac: &[u8; 6]) -> (u64, u64) {
 #[inline]
 fn is_quota_blocked(mac: &[u8; 6]) -> bool {
     unsafe {
-        match MAC_QUOTA_BLOCKED.get(mac) {
+        match QSNP_QUOTA_BLK.get(mac) {
             Some(value) => *value != 0,
             None => false,
         }
@@ -370,16 +370,13 @@ fn should_block_quota(mac: &[u8; 6]) -> bool {
     }
 
     let thresholds = unsafe {
-        match MAC_QUOTA_THRESHOLDS.get(mac) {
+        match QSNP_QUOTA_LIM.get(mac) {
             Some(value) => value,
             None => return false,
         }
     };
-    let wan_total = match MAC_TRAFFIC.get_ptr(mac) {
-        Some(stats) => unsafe {
-            atomic_load_u64(&(*stats)[2])
-                .saturating_add(atomic_load_u64(&(*stats)[3]))
-        },
+    let wan_total = match QSNP_TRAFFIC.get_ptr(mac) {
+        Some(stats) => unsafe { atomic_load_u64(&(*stats)[2]).saturating_add(atomic_load_u64(&(*stats)[3])) },
         None => 0,
     };
     let reached = threshold_reached(thresholds[0], wan_total)
@@ -389,7 +386,7 @@ fn should_block_quota(mac: &[u8; 6]) -> bool {
         || threshold_reached(thresholds[4], wan_total)
         || threshold_reached(thresholds[5], wan_total);
     if reached {
-        let _ = MAC_QUOTA_BLOCKED.insert(mac, &1u8, 0);
+        let _ = QSNP_QUOTA_BLK.insert(mac, &1u8, 0);
     }
     reached
 }

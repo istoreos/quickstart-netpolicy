@@ -1,8 +1,12 @@
-# Bandix
+# Quickstart NetPolicy
 
 English| [简体中文](README.zh.md)
 
-Bandix is a network traffic monitoring tool based on eBPF technology, developed in Rust, which can monitor network traffic, connection statistics, and DNS queries of devices in a local area network in real-time.
+Quickstart NetPolicy is LinkEase's network-policy execution engine for OpenWrt. It is based on the Bandix eBPF implementation and is maintained as an independent product for Quickstart device management, rate limits and traffic quotas.
+
+It uses an independent binary name, control port, data directory, eBPF programs and maps. Upstream Bandix may be installed on the same device, but both engines must not enforce policy on the same network interface at the same time. Startup fails closed when an upstream Bandix process already targets the selected interface.
+
+The current product interface is `v1`. Existing Bandix-compatible traffic endpoints are retained temporarily for migration and the Quickstart backend adapter.
 
 ## Main Features
 
@@ -41,14 +45,14 @@ Bandix is a network traffic monitoring tool based on eBPF technology, developed 
 ## Usage
 
 ```shell
-sudo ./bandix --iface <network_interface_name> [options]
+sudo ./quickstart-netpolicy --iface <network_interface_name> [options]
 ```
 
 ### Command-line Options
 
 - **--iface**: Network interface to monitor (required)
 - **--port**: Web server listening port. Default: `8686`
-- **--data-dir**: Data directory (ring files and rate limit configurations will be stored here). Default: `bandix-data`
+- **--data-dir**: Data directory (ring files and rate limit configurations will be stored here). Default: `/usr/share/quickstart-netpolicy`
 - **--log-level**: Log level: trace, debug, info, warn, error (default: info). Web and DNS logs are always at DEBUG level.
 - **--tc-priority**: TC filter priority (lower number = higher priority, 0 = kernel auto-assign). Default: 0. Use this to control execution order when running alongside other eBPF TC programs.
 - **--web-log**: Enable per-request web logging. Default: `false`
@@ -64,25 +68,25 @@ sudo ./bandix --iface <network_interface_name> [options]
 
 ```shell
 # Enable traffic monitoring only
-sudo ./bandix --iface br-lan --enable-traffic
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic
 
 # Enable both traffic and connection monitoring
-sudo ./bandix --iface br-lan --enable-traffic --enable-connection
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic --enable-connection
 
 # Enable DNS monitoring
-sudo ./bandix --iface br-lan --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --enable-dns
 
 # Enable all monitoring modules
-sudo ./bandix --iface br-lan --enable-traffic --enable-connection --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic --enable-connection --enable-dns
 
 # Custom port and data directory
-sudo ./bandix --iface br-lan --port 8080 --data-dir /var/lib/bandix --enable-traffic --enable-connection --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --port 8765 --data-dir /usr/share/quickstart-netpolicy --enable-traffic --enable-connection --enable-dns
 
-# Run bandix with higher priority (execute before other TC programs)
-sudo ./bandix --iface br-lan --tc-priority 1 --enable-traffic
+# Run Quickstart NetPolicy with higher priority (execute before other TC programs)
+sudo ./quickstart-netpolicy --iface br-lan --tc-order first --enable-traffic
 
-# Run bandix with lower priority (execute after other TC programs)
-sudo ./bandix --iface br-lan --tc-priority 10 --enable-traffic
+# Run Quickstart NetPolicy with lower priority (execute after other TC programs)
+sudo ./quickstart-netpolicy --iface br-lan --tc-order last --enable-traffic
 ```
 
 ## API Endpoints

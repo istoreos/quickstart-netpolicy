@@ -82,7 +82,13 @@ fn format_ip(ip_u64: u64) -> String {
 fn parse_v5(path: &Path, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
     let mut f = File::open(path)?;
     let (ver, cap, entry_count) = read_header_v5(&mut f)?;
-    println!("Ring file: {} (version={}, capacity={}, entries={})", path.display(), ver, cap, entry_count);
+    println!(
+        "Ring file: {} (version={}, capacity={}, entries={})",
+        path.display(),
+        ver,
+        cap,
+        entry_count
+    );
 
     let to_read = (entry_count as usize).min(limit);
     let mut slot_buf = vec![0u8; SLOT_SIZE_LONG_TERM];
@@ -186,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.len() < 2 {
         eprintln!("Usage: read_ring <path_to.ring>");
-        eprintln!("Parse bandix ring file and print first {} entries", limit);
+        eprintln!("Parse quickstart-netpolicy ring file and print first {} entries", limit);
         std::process::exit(1);
     }
 

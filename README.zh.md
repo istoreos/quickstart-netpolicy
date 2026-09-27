@@ -1,8 +1,12 @@
-# Bandix
+# Quickstart NetPolicy
 
 [English](README.md) | 简体中文
 
-Bandix 是一个基于 eBPF 技术的网络流量监控工具，使用 Rust 开发，可以实时监控局域网设备的网络流量、连接统计和 DNS 查询。
+Quickstart NetPolicy 是 LinkEase 面向 OpenWrt 的网络策略执行引擎。项目基于 Bandix 的 eBPF 实现建立独立维护版本，为 Quickstart 设备管理提供限速、流量配额和状态验证能力。
+
+本项目拥有独立的二进制名称、控制端口、数据目录、eBPF 程序和 maps。原版 Bandix 可以与本项目同时安装，但禁止两个引擎同时在同一个网络接口执行策略。如果检测到原版 Bandix 已经使用目标接口，本程序会拒绝挂载。
+
+当前产品接口版本为 `v1`。为 Quickstart 后端适配和存量迁移，现阶段暂时保留 Bandix 兼容的流量端点。
 
 ## 主要功能
 
@@ -41,14 +45,14 @@ Bandix 是一个基于 eBPF 技术的网络流量监控工具，使用 Rust 开�
 ## 使用方法
 
 ```shell
-sudo ./bandix --iface <网络接口名称> [选项]
+sudo ./quickstart-netpolicy --iface <网络接口名称> [选项]
 ```
 
 ### 命令行参数
 
 - **--iface**: 要监控的网络接口（必需）
 - **--port**: Web 服务器监听端口。默认值：`8686`
-- **--data-dir**: 数据目录（环形文件和限速配置将存储在此处）。默认值：`bandix-data`
+- **--data-dir**: 数据目录（环形文件和限速配置将存储在此处）。默认值：`/usr/share/quickstart-netpolicy`
 - **--log-level**: 日志级别：trace, debug, info, warn, error（默认：info）。Web 和 DNS 日志始终为 DEBUG 级别。
 - **--tc-priority**: TC filter 优先级（数字越小优先级越高，0 = 内核自动分配）。默认值：0。用于控制与其他 eBPF TC 程序共存时的执行顺序。
 - **--web-log**: 启用每个请求的 Web 日志记录。默认值：`false`
@@ -64,25 +68,25 @@ sudo ./bandix --iface <网络接口名称> [选项]
 
 ```shell
 # 仅启用流量监控
-sudo ./bandix --iface br-lan --enable-traffic
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic
 
 # 同时启用流量和连接监控
-sudo ./bandix --iface br-lan --enable-traffic --enable-connection
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic --enable-connection
 
 # 启用 DNS 监控
-sudo ./bandix --iface br-lan --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --enable-dns
 
 # 启用所有监控模块
-sudo ./bandix --iface br-lan --enable-traffic --enable-connection --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --enable-traffic --enable-connection --enable-dns
 
 # 自定义端口和数据目录
-sudo ./bandix --iface br-lan --port 8080 --data-dir /var/lib/bandix --enable-traffic --enable-connection --enable-dns
+sudo ./quickstart-netpolicy --iface br-lan --port 8765 --data-dir /usr/share/quickstart-netpolicy --enable-traffic --enable-connection --enable-dns
 
-# 以较高优先级运行 bandix（在其他 TC 程序之前执行）
-sudo ./bandix --iface br-lan --tc-priority 1 --enable-traffic
+# 以较高优先级运行 Quickstart NetPolicy（在其他 TC 程序之前执行）
+sudo ./quickstart-netpolicy --iface br-lan --tc-order first --enable-traffic
 
-# 以较低优先级运行 bandix（在其他 TC 程序之后执行）
-sudo ./bandix --iface br-lan --tc-priority 10 --enable-traffic
+# 以较低优先级运行 Quickstart NetPolicy（在其他 TC 程序之后执行）
+sudo ./quickstart-netpolicy --iface br-lan --tc-order last --enable-traffic
 ```
 
 ## API 接口

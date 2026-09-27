@@ -10,10 +10,10 @@ const DNS_QUERIES_FILE: &str = "queries.jsonl";
 
 fn format_timestamp_ns(unix_ns: u64) -> String {
     use chrono::Local;
-    
+
     let secs = (unix_ns / 1_000_000_000) as i64;
     let nanos = (unix_ns % 1_000_000_000) as u32;
-    
+
     if let Some(datetime) = chrono::DateTime::from_timestamp(secs, nanos) {
         let local_time: chrono::DateTime<Local> = datetime.into();
         local_time.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
@@ -46,7 +46,7 @@ impl From<&DnsQueryRecord> for DnsQueryRecordStorage {
     fn from(record: &DnsQueryRecord) -> Self {
         let unix_ns = crate::utils::time_utils::monotonic_to_unix_ns(record.timestamp);
         let timestamp_formatted = format_timestamp_ns(unix_ns);
-        
+
         Self {
             timestamp: unix_ns,
             timestamp_formatted,

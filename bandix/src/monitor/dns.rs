@@ -1,7 +1,7 @@
 use crate::monitor::{DnsModuleContext, DnsQueryRecord};
 use anyhow::Result;
 use aya::maps::{MapData, RingBuf};
-use bandix_common::PacketHeader;
+use quickstart_netpolicy_common::PacketHeader;
 use trust_dns_proto::{
     op::{Message, MessageType, ResponseCode},
     rr::RData,
@@ -51,10 +51,10 @@ impl DnsMonitor {
                 }
             };
 
-            // 获取 DNS_DATA RingBuf 映射（取得所有权）
+            // Take ownership of the private DNS RingBuf map.
             let map = ebpf
-                .take_map("DNS_DATA")
-                .ok_or_else(|| anyhow::anyhow!("Cannot find DNS_DATA map. Make sure DNS eBPF programs are loaded correctly."))?;
+                .take_map("QSNP_DNS_DATA")
+                .ok_or_else(|| anyhow::anyhow!("Cannot find QSNP_DNS_DATA map. Make sure DNS eBPF programs are loaded correctly."))?;
 
             // 还原 Arc 引用（均指向同一 eBPF 对象）
             // 映射已取出，但 eBPF 对象仍需保留以维持程序挂载
@@ -81,7 +81,7 @@ impl DnsMonitor {
         shutdown_notify: std::sync::Arc<tokio::sync::Notify>,
     ) -> Result<()> {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(10));
-        
+
         let mut flush_interval = if ctx.options.dns_enable_storage() {
             let flush_secs = ctx.options.dns_flush_interval();
             Some(tokio::time::interval(tokio::time::Duration::from_secs(flush_secs)))
@@ -93,12 +93,12 @@ impl DnsMonitor {
             tokio::select! {
                 _ = shutdown_notify.notified() => {
                     log::debug!("DNS monitoring module received shutdown signal, stopping...");
-                    
+
                     if ctx.options.dns_enable_storage() {
                         log::debug!("Saving DNS records before shutdown...");
                         self.save_dns_records(ctx);
                     }
-                    
+
                     break;
                 }
                 _ = interval.tick() => {
@@ -119,11 +119,11 @@ impl DnsMonitor {
 
         Ok(())
     }
-    
+
     fn save_dns_records(&self, ctx: &DnsModuleContext) {
         let base_dir = ctx.options.data_dir();
         let max_records = ctx.options.dns_max_records();
-        
+
         let records = match ctx.dns_queries.lock() {
             Ok(guard) => guard.clone(),
             Err(e) => {
@@ -131,7 +131,7 @@ impl DnsMonitor {
                 return;
             }
         };
-        
+
         match crate::storage::dns::save_dns_queries(base_dir, &records, max_records) {
             Ok(_) => {
                 log::debug!("Successfully saved {} DNS records to storage", records.len());

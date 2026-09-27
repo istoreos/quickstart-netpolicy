@@ -1,7 +1,7 @@
 use crate::api::{ApiResponse, HttpRequest, HttpResponse};
 use crate::monitor::connection::{parse_connection_flows, ConnectionFlowDetail, GlobalConnectionStats};
 use anyhow::Result;
-use bandix_common::ConnectionStats;
+use quickstart_netpolicy_common::ConnectionStats;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -197,11 +197,7 @@ fn paginate_flows(flows: Vec<ConnectionFlowResponse>, page: usize, page_size: us
     let current_page = page.max(1).min(total_pages);
     let start = (current_page - 1).saturating_mul(page_size);
     let end = (start + page_size).min(total);
-    let items = if start < total {
-        flows[start..end].to_vec()
-    } else {
-        Vec::new()
-    };
+    let items = if start < total { flows[start..end].to_vec() } else { Vec::new() };
 
     PagedConnectionFlowsResponse {
         items,
@@ -229,11 +225,8 @@ impl ConnectionApiHandler {
                     } else {
                         true
                     }
-                })
-                    && filter_protocol.map_or(true, |p| f.protocol.eq_ignore_ascii_case(p))
-                    && filter_state.map_or(true, |s| {
-                        f.state.as_ref().map_or(false, |st| st.eq_ignore_ascii_case(s))
-                    })
+                }) && filter_protocol.map_or(true, |p| f.protocol.eq_ignore_ascii_case(p))
+                    && filter_state.map_or(true, |s| f.state.as_ref().map_or(false, |st| st.eq_ignore_ascii_case(s)))
             })
             .map(flow_to_response)
             .collect();
@@ -299,10 +292,7 @@ impl ConnectionApiHandler {
                     }
                     Err(e) => {
                         log::error!("Failed to get connection flows: {}", e);
-                        Ok(HttpResponse::error(
-                            500,
-                            format!("Failed to get connection flows: {}", e),
-                        ))
+                        Ok(HttpResponse::error(500, format!("Failed to get connection flows: {}", e)))
                     }
                 }
             }

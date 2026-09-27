@@ -10,13 +10,13 @@ pub mod subnet {
     // Each entry: [network address (4 bytes), subnet mask (4 bytes), enabled (1 byte), padding (7 bytes)]
     // Support up to 16 subnets
     #[map]
-    pub static IPV4_SUBNET_INFO: Array<[u8; 16]> = Array::with_max_entries(16, 0);
+    pub static QSNP_IPV4_NET: Array<[u8; 16]> = Array::with_max_entries(16, 0);
 
     // IPv6 subnet info: store multiple prefixes
     // Each entry: [network prefix (16 bytes), prefix_len (1 byte), enabled (1 byte), padding (14 bytes)]
     // Support up to 16 subnets (matches Linux kernel default: net.ipv6.conf.*.max_addresses = 16)
     #[map]
-    pub static IPV6_SUBNET_INFO: Array<[u8; 32]> = Array::with_max_entries(16, 0);
+    pub static QSNP_IPV6_NET: Array<[u8; 32]> = Array::with_max_entries(16, 0);
 }
 
 pub mod config {
@@ -27,17 +27,17 @@ pub mod config {
     // Index 0: traffic module (0=disabled, 1=enabled)
     // Index 1: DNS module (0=disabled, 1=enabled)
     #[map]
-    pub static MODULE_ENABLE_FLAGS: Array<u8> = Array::with_max_entries(2, 0);
+    pub static QSNP_MOD_FLAGS: Array<u8> = Array::with_max_entries(2, 0);
 }
 
-use config::MODULE_ENABLE_FLAGS;
-use subnet::{IPV4_SUBNET_INFO, IPV6_SUBNET_INFO};
+use config::QSNP_MOD_FLAGS;
+use subnet::{QSNP_IPV4_NET, QSNP_IPV6_NET};
 
 #[inline]
 pub fn is_subnet_ip(ip: &[u8; 4]) -> bool {
     // Check against all configured IPv4 subnets (support up to 16 subnets)
     for i in 0..16 {
-        if let Some(subnet_data) = IPV4_SUBNET_INFO.get(i as u32) {
+        if let Some(subnet_data) = QSNP_IPV4_NET.get(i as u32) {
             // subnet_data format: [network_addr (4 bytes), subnet_mask (4 bytes), enabled (1 byte), padding (7 bytes)]
             let enabled = subnet_data[8];
             if enabled == 0 {
@@ -69,7 +69,7 @@ pub fn is_subnet_ip(ip: &[u8; 4]) -> bool {
 pub fn is_subnet_ipv6(ip: &[u8; 16]) -> bool {
     // Check against all configured IPv6 subnets (support up to 16 subnets)
     for i in 0..16 {
-        if let Some(subnet_data) = IPV6_SUBNET_INFO.get(i as u32) {
+        if let Some(subnet_data) = QSNP_IPV6_NET.get(i as u32) {
             // subnet_data format: [prefix (16 bytes), prefix_len (1 byte), enabled (1 byte), padding (14 bytes)]
             let enabled = subnet_data[17];
             if enabled == 0 {
@@ -205,7 +205,7 @@ pub fn get_current_time() -> u64 {
 // Module Configuration Utils
 // ============================================================================
 
-/// 模块 indices in MODULE_ENABLE_FLAGS array
+/// Module indices in QSNP_MOD_FLAGS array.
 pub mod module_index {
     pub const TRAFFIC: u32 = 0;
     pub const DNS: u32 = 1;
@@ -215,7 +215,7 @@ pub mod module_index {
 /// Uses volatile read to ensure the value is always read from memory
 #[inline(always)]
 pub fn is_module_enabled(index: u32) -> bool {
-    match MODULE_ENABLE_FLAGS.get(index) {
+    match QSNP_MOD_FLAGS.get(index) {
         Some(flag_ptr) => unsafe { core::ptr::read_volatile(flag_ptr as *const u8) != 0 },
         None => false,
     }

@@ -1,5 +1,5 @@
 [package]
-name = "bandix-common"
+name = "quickstart-netpolicy-common"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,4 +15,4 @@ serde = { workspace = true, optional = true }
 
 [lib]
 path = "src/lib.rs"
-name = "bandix_common"
+name = "quickstart_netpolicy_common"

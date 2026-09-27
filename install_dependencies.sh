@@ -60,10 +60,10 @@ install_system_packages() {
     case "$PACKAGE_MANAGER" in
         apt)
             root_exec apt-get update
-            root_exec apt-get install -y build-essential curl tar gzip xz-utils pkg-config gcc file wget
+            root_exec apt-get install -y build-essential curl tar gzip xz-utils zstd pkg-config gcc file wget
             ;;
         dnf|yum)
-            root_exec "$PACKAGE_MANAGER" install -y gcc gcc-c++ make curl tar gzip xz pkgconf-pkg-config file wget
+            root_exec "$PACKAGE_MANAGER" install -y gcc gcc-c++ make curl tar gzip xz zstd pkgconf-pkg-config file wget
             ;;
         *)
             echo -e "${RED}错误: 未能识别的包管理器，仅支持 apt (Debian/Ubuntu) 或 dnf/yum (Fedora/RHEL 等)"
@@ -106,8 +106,25 @@ rustup toolchain install nightly
 echo "添加 rust-src 组件 (nightly)..."
 rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
 
-echo "安装 bpf-linker (v0.10.2) ..." # bpf-linker 版本需要和 LLVM 版本对应 。  v0.10.2 对应 LLVM 21.1.2
-cargo install bpf-linker@0.10.2
+echo "安装 bpf-linker (v0.11.1 prebuilt) ..."
+BPF_LINKER_VERSION="0.11.1"
+case "$(uname -m)" in
+    x86_64) BPF_LINKER_ARCH="x86_64" ;;
+    aarch64|arm64) BPF_LINKER_ARCH="aarch64" ;;
+    *)
+        echo -e "${RED}错误: bpf-linker 没有配置当前构建机架构 $(uname -m)${NC}"
+        exit 1
+        ;;
+esac
+BPF_LINKER_TEMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$BPF_LINKER_TEMP_DIR"' EXIT
+curl --fail --location --retry 3 \
+    "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/bpf-linker-${BPF_LINKER_ARCH}-unknown-linux-musl.tar.zst" \
+    --output "$BPF_LINKER_TEMP_DIR/bpf-linker.tar.zst"
+tar --zstd -xf "$BPF_LINKER_TEMP_DIR/bpf-linker.tar.zst" -C "$BPF_LINKER_TEMP_DIR"
+mkdir -p "$HOME/.cargo/bin"
+install -m 0755 "$BPF_LINKER_TEMP_DIR/bpf-linker" "$HOME/.cargo/bin/bpf-linker"
+bpf-linker --version
 
 RUST_TARGETS=(
     "x86_64-unknown-linux-musl"
@@ -200,4 +217,3 @@ echo "总计: ${#TOOLCHAINS[@]}"
 echo ""
 echo "工具链位置: $INSTALL_BASE"
 echo ""
-

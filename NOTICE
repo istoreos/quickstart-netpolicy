@@ -1,0 +1,10 @@
+Quickstart NetPolicy
+Copyright 2026 LinkEase
+
+This product is based on Bandix by timsaya:
+https://github.com/timsaya/bandix
+
+The upstream source was used as the initial implementation base. Quickstart
+NetPolicy is an independently maintained product and is not presented as an
+official Bandix release. Copyright and license notices from the upstream
+project are retained under the repository LICENSE terms.

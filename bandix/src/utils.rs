@@ -699,7 +699,7 @@ pub mod time_utils {
                 }
             }
         }
-        
+
         Err(anyhow::anyhow!("Failed to get boot time from /proc/stat"))
     }
 

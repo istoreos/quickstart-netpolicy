@@ -1,7 +1,7 @@
 use super::remove_rlimit_memlock;
-use aya::programs::{LinkOrder, ProgramId};
-use aya::programs::tc::{self, NlOptions, SchedClassifier, TcAttachOptions, TcAttachType};
 use crate::command::{TcBackend, TcOrder};
+use aya::programs::tc::{self, NlOptions, SchedClassifier, TcAttachOptions, TcAttachType};
+use aya::programs::{LinkOrder, ProgramId};
 use std::time::Duration;
 
 const MAX_LOAD_RETRIES: u32 = 3;
@@ -21,7 +21,12 @@ fn load_program_with_retry(program: &mut SchedClassifier, name: &str) -> anyhow:
             }
         }
     }
-    Err(anyhow::anyhow!("Failed to load {} after {} retries: {}", name, MAX_LOAD_RETRIES, last_err.unwrap()))
+    Err(anyhow::anyhow!(
+        "Failed to load {} after {} retries: {}",
+        name,
+        MAX_LOAD_RETRIES,
+        last_err.unwrap()
+    ))
 }
 
 /// 加载共享的 eBPF 程序（入口和出口）
@@ -100,7 +105,10 @@ pub async fn load_shared(
     );
 
     let mut ebpf = aya::EbpfLoader::new()
-        .load(aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/bandix")))
+        .load(aya::include_bytes_aligned!(concat!(
+            env!("OUT_DIR"),
+            "/quickstart-netpolicy-ebpf"
+        )))
         .map_err(|e| anyhow::anyhow!("Failed to load eBPF program: {}", e))?;
 
     if let Err(e) = tc::qdisc_add_clsact(&iface) {
@@ -108,12 +116,12 @@ pub async fn load_shared(
     }
 
     let ingress_program: &mut SchedClassifier = ebpf
-        .program_mut("shared_ingress")
-        .ok_or_else(|| anyhow::anyhow!("Shared ingress program not found in eBPF object"))?
+        .program_mut("qsnp_ingress")
+        .ok_or_else(|| anyhow::anyhow!("Quickstart ingress program not found in eBPF object"))?
         .try_into()
         .map_err(|e| anyhow::anyhow!("Failed to convert to SchedClassifier: {:?}", e))?;
 
-    load_program_with_retry(ingress_program, "shared_ingress")?;
+    load_program_with_retry(ingress_program, "qsnp_ingress")?;
 
     let opts = |attach_type: TcAttachType| -> anyhow::Result<TcAttachOptions> {
         if use_tcx {
@@ -175,21 +183,19 @@ pub async fn load_shared(
 
     // 加载并附加共享出口程序
     let egress_program: &mut SchedClassifier = ebpf
-        .program_mut("shared_egress")
-        .ok_or_else(|| anyhow::anyhow!("Shared egress program not found in eBPF object"))?
+        .program_mut("qsnp_egress")
+        .ok_or_else(|| anyhow::anyhow!("Quickstart egress program not found in eBPF object"))?
         .try_into()
         .map_err(|e| anyhow::anyhow!("Failed to convert to SchedClassifier: {:?}", e))?;
 
-    load_program_with_retry(egress_program, "shared_egress")?;
+    load_program_with_retry(egress_program, "qsnp_egress")?;
 
     egress_program
         .attach_with_options(&iface, TcAttachType::Egress, opts(TcAttachType::Egress)?)
         .map_err(|e| anyhow::anyhow!("Failed to attach shared egress program to {}: {}", iface, e))?;
 
     log::info!("Shared egress program successfully attached to {}", iface);
-    log::info!(
-        "Shared eBPF programs loaded and attached. DNS and traffic modules share the same ingress and egress hooks."
-    );
+    log::info!("Shared eBPF programs loaded and attached. DNS and traffic modules share the same ingress and egress hooks.");
     log::info!(
         "TC backend options: {}",
         if use_tcx {

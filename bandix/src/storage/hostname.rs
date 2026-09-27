@@ -40,7 +40,11 @@ pub fn load_hostname_bindings(base_dir: &str) -> Result<Vec<([u8; 6], String)>, 
                     break;
                 }
             }
-            if ok { Some(mac) } else { None }
+            if ok {
+                Some(mac)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -101,7 +105,11 @@ pub fn load_hostname_from_ubus() -> Result<Vec<([u8; 6], String)>, anyhow::Error
                             break;
                         }
                     }
-                    if ok { Some(mac) } else { None }
+                    if ok {
+                        Some(mac)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }

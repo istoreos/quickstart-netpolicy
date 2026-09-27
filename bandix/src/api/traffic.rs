@@ -1,14 +1,14 @@
 use super::{ApiResponse, HttpRequest, HttpResponse};
 use crate::command::Options;
 use crate::storage::quota::{TrafficQuota, TrafficQuotaManager, TrafficQuotaStatus};
-use crate::storage::traffic::{self, LongTermRingManager, RealtimeRingManager, ScheduledRateLimit, TimeSlot, save_all_scheduled_limits};
+use crate::storage::traffic::{self, save_all_scheduled_limits, LongTermRingManager, RealtimeRingManager, ScheduledRateLimit, TimeSlot};
 use crate::utils::format_utils::{format_bytes, format_mac};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 设备信息，用于 API 响应
@@ -689,7 +689,6 @@ impl TrafficApiHandler {
             }
         };
 
-
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::from_secs(0))
@@ -811,7 +810,10 @@ impl TrafficApiHandler {
                             log::debug!("MAC {}: no active current-hour increments found", format_mac(&mac));
                         }
                     } else {
-                        log::debug!("MAC {}: query does not overlap current hour, skip accumulator", format_mac(&mac));
+                        log::debug!(
+                            "MAC {}: query does not overlap current hour, skip accumulator",
+                            format_mac(&mac)
+                        );
                     }
 
                     log::debug!(
@@ -842,8 +844,6 @@ impl TrafficApiHandler {
                         device.wan_tx_bytes,
                     )
                 };
-
-                
 
                 let device_info = DeviceInfo {
                     ip: ip_str,
@@ -955,22 +955,38 @@ impl TrafficApiHandler {
                 let ptr = std::sync::Arc::as_ptr(ingress_ebpf) as *const aya::Ebpf as *mut aya::Ebpf;
                 &mut *ptr
             };
-            if let Ok(mut mac_traffic) = aya::maps::HashMap::<_, [u8; 6], [u64; 4]>::try_from(ebpf_mut.map_mut("MAC_TRAFFIC").ok_or_else(|| anyhow::anyhow!("MAC_TRAFFIC map not found"))?) {
+            if let Ok(mut mac_traffic) = aya::maps::HashMap::<_, [u8; 6], [u64; 4]>::try_from(
+                ebpf_mut
+                    .map_mut("QSNP_TRAFFIC")
+                    .ok_or_else(|| anyhow::anyhow!("QSNP_TRAFFIC map not found"))?,
+            ) {
                 let _ = mac_traffic.remove(&mac);
             }
-            if let Ok(mut mac_rate_limits) = aya::maps::HashMap::<_, [u8; 6], [u64; 2]>::try_from(ebpf_mut.map_mut("MAC_RATE_LIMITS").ok_or_else(|| anyhow::anyhow!("MAC_RATE_LIMITS map not found"))?) {
+            if let Ok(mut mac_rate_limits) = aya::maps::HashMap::<_, [u8; 6], [u64; 2]>::try_from(
+                ebpf_mut
+                    .map_mut("QSNP_RATE_LIMIT")
+                    .ok_or_else(|| anyhow::anyhow!("QSNP_RATE_LIMIT map not found"))?,
+            ) {
                 let _ = mac_rate_limits.remove(&mac);
             }
-            if let Ok(mut rate_buckets) = aya::maps::HashMap::<_, [u8; 6], [u64; 3]>::try_from(ebpf_mut.map_mut("RATE_BUCKETS").ok_or_else(|| anyhow::anyhow!("RATE_BUCKETS map not found"))?) {
+            if let Ok(mut rate_buckets) = aya::maps::HashMap::<_, [u8; 6], [u64; 3]>::try_from(
+                ebpf_mut
+                    .map_mut("QSNP_BUCKETS")
+                    .ok_or_else(|| anyhow::anyhow!("QSNP_BUCKETS map not found"))?,
+            ) {
                 let _ = rate_buckets.remove(&mac);
             }
-            if let Ok(mut quota_blocked) = aya::maps::HashMap::<_, [u8; 6], u8>::try_from(ebpf_mut.map_mut("MAC_QUOTA_BLOCKED").ok_or_else(|| anyhow::anyhow!("MAC_QUOTA_BLOCKED map not found"))?) {
+            if let Ok(mut quota_blocked) = aya::maps::HashMap::<_, [u8; 6], u8>::try_from(
+                ebpf_mut
+                    .map_mut("QSNP_QUOTA_BLK")
+                    .ok_or_else(|| anyhow::anyhow!("QSNP_QUOTA_BLK map not found"))?,
+            ) {
                 let _ = quota_blocked.remove(&mac);
             }
             if let Ok(mut quota_thresholds) = aya::maps::HashMap::<_, [u8; 6], [u64; 6]>::try_from(
                 ebpf_mut
-                    .map_mut("MAC_QUOTA_THRESHOLDS")
-                    .ok_or_else(|| anyhow::anyhow!("MAC_QUOTA_THRESHOLDS map not found"))?,
+                    .map_mut("QSNP_QUOTA_LIM")
+                    .ok_or_else(|| anyhow::anyhow!("QSNP_QUOTA_LIM map not found"))?,
             ) {
                 let _ = quota_thresholds.remove(&mac);
             }
@@ -1145,12 +1161,7 @@ impl TrafficApiHandler {
         let mac = crate::utils::network_utils::parse_mac_address(&set_request.mac)?;
         let time_slot = TimeSlot::try_from(&set_request.time_slot).map_err(|e| anyhow::anyhow!("Invalid time slot: {}", e))?;
 
-        let scheduled_limit = ScheduledRateLimit::new(
-            mac,
-            time_slot,
-            set_request.wan_rx_rate_limit,
-            set_request.wan_tx_rate_limit,
-        );
+        let scheduled_limit = ScheduledRateLimit::new(mac, time_slot, set_request.wan_rx_rate_limit, set_request.wan_tx_rate_limit);
 
         {
             let mut srl = self.scheduled_rate_limits.lock().unwrap();
@@ -1212,7 +1223,10 @@ impl TrafficApiHandler {
             let mut srl = self.scheduled_rate_limits.lock().unwrap();
             let found = srl.iter().any(|r| r.id == scheduled_limit.id);
             if !found {
-                return Ok(HttpResponse::error(404, format!("Rule with id {} not found", scheduled_limit.id)));
+                return Ok(HttpResponse::error(
+                    404,
+                    format!("Rule with id {} not found", scheduled_limit.id),
+                ));
             }
             srl.retain(|r| r.id != scheduled_limit.id);
             srl.push(scheduled_limit.clone());
@@ -1258,7 +1272,10 @@ impl TrafficApiHandler {
             let mut srl = self.scheduled_rate_limits.lock().unwrap();
             deleted_rule = srl.iter().find(|r| r.id == delete_request.id).cloned();
             if deleted_rule.is_none() {
-                return Ok(HttpResponse::error(404, format!("Rule with id {} not found", delete_request.id)));
+                return Ok(HttpResponse::error(
+                    404,
+                    format!("Rule with id {} not found", delete_request.id),
+                ));
             }
             srl.retain(|r| r.id != delete_request.id);
             save_all_scheduled_limits(self.options.data_dir(), &srl)?;

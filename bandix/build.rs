@@ -8,8 +8,8 @@ fn main() -> anyhow::Result<()> {
         .context("MetadataCommand::exec")?;
     let ebpf_package = packages
         .into_iter()
-        .find(|cargo_metadata::Package { name, .. }| name.as_str() == "bandix-ebpf")
-        .ok_or_else(|| anyhow!("bandix-ebpf package not found"))?;
+        .find(|cargo_metadata::Package { name, .. }| name.as_str() == "quickstart-netpolicy-ebpf")
+        .ok_or_else(|| anyhow!("quickstart-netpolicy-ebpf package not found"))?;
     let cargo_metadata::Package { name, manifest_path, .. } = ebpf_package;
     let ebpf_package = aya_build::Package {
         name: name.as_str(),

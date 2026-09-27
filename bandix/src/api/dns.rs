@@ -150,8 +150,7 @@ impl DnsApiHandler {
     /// 计算系统启动时的 Unix 时间戳（纳秒）
     /// 如果无法获取启动时间，返回错误
     fn calculate_boot_time_unix_ns() -> Result<u64, String> {
-        crate::utils::time_utils::get_boot_time_unix_ns()
-            .map_err(|e| e.to_string())
+        crate::utils::time_utils::get_boot_time_unix_ns().map_err(|e| e.to_string())
     }
 
     /// 将单调时间戳（纳秒）转换为 Unix 时间戳（毫秒）

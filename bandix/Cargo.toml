@@ -1,13 +1,13 @@
 [package]
-name = "bandix"
-version = "0.12.10"
+name = "quickstart-netpolicy"
+version = "0.1.0"
 edition = "2021"
-default-run = "bandix"
+default-run = "quickstart-netpolicy"
 
 license = { workspace = true }
 
 [dependencies]
-bandix-common = { path = "../bandix-common", features = ["user", "serde"] }
+quickstart-netpolicy-common = { path = "../bandix-common", features = ["user", "serde"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
@@ -40,10 +40,9 @@ reqwest = { workspace = true }
 anyhow = { workspace = true }
 aya-build = { workspace = true }
 cargo_metadata = { workspace = true }
-bandix-ebpf = { path = "../bandix-ebpf" }
 
 [[bin]]
-name = "bandix"
+name = "quickstart-netpolicy"
 path = "src/main.rs"
 
 [[bin]]

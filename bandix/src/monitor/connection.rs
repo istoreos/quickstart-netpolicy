@@ -1,7 +1,7 @@
 use crate::command::Options;
 use crate::utils::network_utils;
 use anyhow::Result;
-use bandix_common::{ConnectionStats, DeviceConnectionStats};
+use quickstart_netpolicy_common::{ConnectionStats, DeviceConnectionStats};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
@@ -29,10 +29,7 @@ pub struct ConnectionFlowDetail {
 pub fn parse_connection_flows() -> Result<Vec<ConnectionFlowDetail>> {
     let output = Command::new("conntrack").arg("-L").output()?;
     if !output.status.success() {
-        anyhow::bail!(
-            "Failed to execute conntrack -L: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        anyhow::bail!("Failed to execute conntrack -L: {}", String::from_utf8_lossy(&output.stderr));
     }
     let content = String::from_utf8_lossy(&output.stdout);
     let mut flows = Vec::new();
@@ -160,14 +157,12 @@ impl Default for GlobalConnectionStats {
 /// 1. 总统计：所有 TCP/UDP 连接（无过滤）
 /// 2. 设备统计：ARP 表中且与接口在同一子网中的设备的连接
 pub fn parse_connection_stats(interface_ip: [u8; 4], subnet_mask: [u8; 4]) -> Result<GlobalConnectionStats> {
-    let output = Command::new("conntrack")
-        .arg("-L")
-        .output()?;
-    
+    let output = Command::new("conntrack").arg("-L").output()?;
+
     if !output.status.success() {
         anyhow::bail!("Failed to execute conntrack -L: {}", String::from_utf8_lossy(&output.stderr));
     }
-    
+
     let content = String::from_utf8_lossy(&output.stdout);
     let ip_mac_mapping = network_utils::get_ip_mac_mapping()?;
 
@@ -187,7 +182,7 @@ pub fn parse_connection_stats(interface_ip: [u8; 4], subnet_mask: [u8; 4]) -> Re
         if line.trim().is_empty() {
             continue;
         }
-        
+
         if line.contains("flow entries have been shown") {
             continue;
         }
@@ -442,4 +437,3 @@ impl ConnectionMonitor {
         Ok(())
     }
 }
-

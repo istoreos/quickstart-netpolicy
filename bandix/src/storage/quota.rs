@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn saves_and_restores_quota_usage() {
-        let dir = std::env::temp_dir().join(format!("bandix-quota-test-{}", now_millis()));
+        let dir = std::env::temp_dir().join(format!("quickstart-netpolicy-quota-test-{}", now_millis()));
         let base = dir.to_str().unwrap();
         let mac = [0, 1, 2, 3, 4, 5];
         let now = local_time(2026, 9, 4, 10);

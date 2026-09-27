@@ -45,6 +45,6 @@ codegen-units = 1
 panic = "abort"
 strip = "symbols"
 
-[profile.release.package.bandix-ebpf]
+[profile.release.package.quickstart-netpolicy-ebpf]
 debug = 0
 codegen-units = 1

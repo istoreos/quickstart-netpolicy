@@ -2,7 +2,7 @@
 # Copyright (c) 2025 SMALLPROGRAM <https://github.com/smallprogram>
 # Description: Auto compile
 #
-name: "Build Bandix"
+name: "Build Quickstart NetPolicy"
 on:
   repository_dispatch:
   workflow_dispatch:
@@ -15,7 +15,7 @@ env:
   TZ: Asia/Shanghai
 
 jobs:
-  build_bandix:
+  build_netpolicy:
     name: Check Version
     runs-on: ubuntu-24.04
     steps:
@@ -60,8 +60,8 @@ jobs:
           df -H
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Build bandix ${{ steps.check_version.outputs.latest_version }}
-        id: build_bandix
+      - name: Build quickstart-netpolicy ${{ steps.check_version.outputs.latest_version }}
+        id: build_netpolicy
         if: steps.check_version.outputs.has_update == 'true' && steps.install_dependencies.outputs.status == 'success'
         run: |
           chmod +x ./build_release.sh
@@ -71,7 +71,7 @@ jobs:
 
       - name: Prepare release
         id: prepare_release
-        if: steps.check_version.outputs.has_update == 'true' && steps.build_bandix.outputs.status == 'success'
+        if: steps.check_version.outputs.has_update == 'true' && steps.build_netpolicy.outputs.status == 'success'
         run: |
           echo "![](https://img.shields.io/github/downloads/${{ github.repository }}/${{steps.check_version.outputs.latest_version}}/total?style=flat-square)" >> release.txt
           touch release.txt

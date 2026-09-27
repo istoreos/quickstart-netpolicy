@@ -118,6 +118,19 @@ pub struct ApiRouter {
     handlers: HashMap<String, ApiHandler>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineCapabilities {
+    product: &'static str,
+    version: &'static str,
+    interface_version: &'static str,
+    engine: &'static str,
+    lineage: &'static str,
+    data_plane: &'static str,
+    modules: Vec<String>,
+    protocol_compatibility: Vec<&'static str>,
+}
+
 impl ApiRouter {
     pub fn new() -> Self {
         Self { handlers: HashMap::new() }
@@ -130,6 +143,26 @@ impl ApiRouter {
 
     /// Route a request to the appropriate handler
     pub async fn route_request(&self, request: &HttpRequest) -> Result<HttpResponse, anyhow::Error> {
+        if request.path == "/api/v1/system/capabilities" {
+            if request.method != "GET" {
+                return Ok(HttpResponse::error(405, "Method not allowed".to_string()));
+            }
+
+            let mut modules: Vec<String> = self.handlers.keys().cloned().collect();
+            modules.sort();
+            let body = serde_json::to_string(&ApiResponse::success(EngineCapabilities {
+                product: "quickstart-netpolicy",
+                version: env!("CARGO_PKG_VERSION"),
+                interface_version: "1",
+                engine: "quickstart-native",
+                lineage: "bandix-v0.12.10",
+                data_plane: "ebpf-tc",
+                modules,
+                protocol_compatibility: vec!["bandix-http-v0.12"],
+            }))?;
+            return Ok(HttpResponse::ok(body));
+        }
+
         // Try to find a handler that supports this route
         for handler in self.handlers.values() {
             for route in handler.supported_routes() {
@@ -141,6 +174,28 @@ impl ApiRouter {
 
         // No handler found
         Ok(HttpResponse::not_found())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn capability_route_identifies_independent_engine() {
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            path: "/api/v1/system/capabilities".to_string(),
+            query_params: HashMap::new(),
+            body: None,
+        };
+
+        let response = ApiRouter::new().route_request(&request).await.unwrap();
+        assert_eq!(response.status, 200);
+        let document: serde_json::Value = serde_json::from_str(&response.body).unwrap();
+        assert_eq!(document["data"]["product"], "quickstart-netpolicy");
+        assert_eq!(document["data"]["interfaceVersion"], "1");
+        assert_eq!(document["data"]["engine"], "quickstart-native");
     }
 }
 

@@ -137,7 +137,7 @@ pub fn log_startup_info(options: &Options) {
     let mem_mb = mem_total_mb().unwrap_or(0);
     let (cpu_model, cores) = cpu_model_and_cores().unwrap_or(("Unknown CPU".to_string(), 1));
 
-    info!("bandix v{} started", app_version);
+    info!("quickstart-netpolicy v{} started", app_version);
     info!("Host: {} (uid={}, gid={})", host, uid, gid);
     info!("OS: {}", os);
     info!("Kernel: {}", kver);
@@ -187,7 +187,10 @@ pub fn log_startup_info(options: &Options) {
     }
 
     if options.enable_traffic() && options.traffic_neighbor_flush_enable() {
-        info!("Traffic neighbor flush enabled (interval: {}s)", options.traffic_neighbor_flush_interval());
+        info!(
+            "Traffic neighbor flush enabled (interval: {}s)",
+            options.traffic_neighbor_flush_interval()
+        );
     }
 
     if let Some(kvs) = parse_openwrt_from_os_release() {

@@ -2,6 +2,7 @@ mod api;
 mod command;
 mod device;
 mod ebpf;
+mod engine_guard;
 mod monitor;
 mod storage;
 mod system;

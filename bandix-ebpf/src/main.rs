@@ -23,7 +23,7 @@ fn process_module_result(result: Result<i32, ()>) -> Option<i32> {
 }
 
 #[classifier]
-pub fn shared_ingress(ctx: TcContext) -> i32 {
+pub fn qsnp_ingress(ctx: TcContext) -> i32 {
     if is_traffic_enabled() {
         if let Some(result) = process_module_result(handle_traffic_ingress(&ctx)) {
             return result;
@@ -40,7 +40,7 @@ pub fn shared_ingress(ctx: TcContext) -> i32 {
 }
 
 #[classifier]
-pub fn shared_egress(ctx: TcContext) -> i32 {
+pub fn qsnp_egress(ctx: TcContext) -> i32 {
     if is_traffic_enabled() {
         if let Some(result) = process_module_result(handle_traffic_egress(&ctx)) {
             return result;

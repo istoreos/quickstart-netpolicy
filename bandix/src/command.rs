@@ -59,12 +59,12 @@ pub struct CommonArgs {
     #[clap(long, help = "Network interface to monitor (required)")]
     pub iface: String,
 
-    #[clap(long, default_value = "8686", help = "Web server listening port")]
+    #[clap(long, default_value = "8765", help = "Local control server listening port")]
     pub port: u16,
 
     #[clap(
         long,
-        default_value = "bandix-data",
+        default_value = "/usr/share/quickstart-netpolicy",
         help = "Data directory (ring files and rate limit configurations will be stored here)"
     )]
     pub data_dir: String,
@@ -220,10 +220,10 @@ pub struct ConnectionArgs {
 }
 
 #[derive(Debug, Parser, Clone)]
-#[clap(name = "bandix")]
-#[clap(author = "github.com/timsaya")]
+#[clap(name = "quickstart-netpolicy")]
+#[clap(author = "LinkEase; based on Bandix by timsaya")]
 #[clap(version = env!("CARGO_PKG_VERSION"))]
-#[clap(about = "Network traffic monitoring based on eBPF for OpenWrt")]
+#[clap(about = "Quickstart network policy execution engine for OpenWrt")]
 pub struct Options {
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -403,10 +403,7 @@ fn parse_cidr(cidr: &str) -> Result<([u8; 4], [u8; 4]), anyhow::Error> {
     Ok((network_addr, subnet_mask))
 }
 
-pub fn build_allowed_ipv4_subnets(
-    subnet_info: &SubnetInfo,
-    additional_subnets: &str,
-) -> Vec<([u8; 4], [u8; 4])> {
+pub fn build_allowed_ipv4_subnets(subnet_info: &SubnetInfo, additional_subnets: &str) -> Vec<([u8; 4], [u8; 4])> {
     let mut subnets = Vec::new();
     let net: [u8; 4] = [
         subnet_info.interface_ip[0] & subnet_info.subnet_mask[0],
@@ -465,9 +462,7 @@ fn validate_arguments(opt: &Options) -> Result<(), anyhow::Error> {
         }
         _ => {
             if opt.tcx_anchor_ingress_id().is_some() || opt.tcx_anchor_egress_id().is_some() {
-                anyhow::bail!(
-                    "--tcx-anchor-ingress-id and --tcx-anchor-egress-id can only be used when --tc-order is before/after"
-                );
+                anyhow::bail!("--tcx-anchor-ingress-id and --tcx-anchor-egress-id can only be used when --tc-order is before/after");
             }
         }
     }
@@ -550,7 +545,7 @@ impl SubnetInfo {
     }
 }
 
-// 把接口当前的 IPv6 地址写入 IPV6_SUBNET_INFO 映射
+// Write current interface IPv6 prefixes into the private QSNP_IPV6_NET map.
 // 先写新条目再清掉多余槽位，避免刷新期间出现所有网段都未配置的空窗
 fn write_ipv6_subnets(
     ipv6_subnet_info: &mut Array<aya::maps::MapData, [u8; 32]>,
@@ -600,7 +595,7 @@ async fn create_module_contexts(
             log::info!("Configuring subnet info maps for traffic module...");
 
             // 配置 IPv4 子网信息映射 (支持多个子网)
-            let mut ipv4_subnet_info: Array<_, [u8; 16]> = Array::try_from(ebpf.take_map("IPV4_SUBNET_INFO").unwrap())?;
+            let mut ipv4_subnet_info: Array<_, [u8; 16]> = Array::try_from(ebpf.take_map("QSNP_IPV4_NET").unwrap())?;
 
             // 初始化所有槽位为空
             for i in 0..16 {
@@ -670,7 +665,7 @@ async fn create_module_contexts(
             }
 
             // 配置 IPv6 子网信息映射
-            let mut ipv6_subnet_info: Array<_, [u8; 32]> = Array::try_from(ebpf.take_map("IPV6_SUBNET_INFO").unwrap())?;
+            let mut ipv6_subnet_info: Array<_, [u8; 32]> = Array::try_from(ebpf.take_map("QSNP_IPV6_NET").unwrap())?;
             write_ipv6_subnets(&mut ipv6_subnet_info, &subnet_info.ipv6_addresses)?;
 
             // WAN 掉线重拨后 ISP 下发的 PD 前缀可能变化，接口的 IPv6 地址随之更新。
@@ -709,8 +704,8 @@ async fn create_module_contexts(
         // 配置模块启用标志
         log::info!("Configuring module enable flags...");
         let mut module_flags: Array<_, u8> = Array::try_from(
-            ebpf.take_map("MODULE_ENABLE_FLAGS")
-                .ok_or_else(|| anyhow::anyhow!("Cannot find MODULE_ENABLE_FLAGS map"))?,
+            ebpf.take_map("QSNP_MOD_FLAGS")
+                .ok_or_else(|| anyhow::anyhow!("Cannot find QSNP_MOD_FLAGS map"))?,
         )?;
 
         // 设置traffic module flag (index 0)
@@ -724,12 +719,12 @@ async fn create_module_contexts(
         log::info!("DNS module enabled: {}", dns_flag != 0);
 
         let dns_map = if options.enable_dns() {
-            // 在包装到 Arc 之前获取 DNS_DATA RingBuf 映射
+            // Acquire the private DNS ring map before wrapping the eBPF object in Arc.
             // 这是必要的，因为 take_map 需要独占访问
             log::info!("Acquiring DNS RingBuf map...");
             Some(
-                ebpf.take_map("DNS_DATA")
-                    .ok_or_else(|| anyhow::anyhow!("Cannot find DNS_DATA map. Make sure DNS eBPF programs are loaded correctly."))?,
+                ebpf.take_map("QSNP_DNS_DATA")
+                    .ok_or_else(|| anyhow::anyhow!("Cannot find QSNP_DNS_DATA map. Make sure DNS eBPF programs are loaded correctly."))?,
             )
         } else {
             None
@@ -842,11 +837,7 @@ fn start_hostname_refresh_task(
     })
 }
 
-fn start_neighbor_flush_task(
-    iface: String,
-    interval_secs: u64,
-    shutdown_notify: Arc<tokio::sync::Notify>,
-) -> tokio::task::JoinHandle<()> {
+fn start_neighbor_flush_task(iface: String, interval_secs: u64, shutdown_notify: Arc<tokio::sync::Notify>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1006,6 +997,10 @@ pub async fn run(options: Options) -> Result<(), anyhow::Error> {
         return Err(anyhow::anyhow!(
             "No monitoring modules enabled. At least one module must be enabled: --enable-traffic, --enable-dns, or --enable-connection"
         ));
+    }
+
+    if options.enable_traffic() || options.enable_dns() {
+        crate::engine_guard::ensure_interface_is_not_owned_by_bandix(options.iface())?;
     }
 
     run_service(&options).await?;

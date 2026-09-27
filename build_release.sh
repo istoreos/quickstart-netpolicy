@@ -33,6 +33,7 @@ set_linker_env "CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER" "mipsel-linux-mus
 
 # 定义版本号（从 Cargo.toml 获取或手动指定）
 VERSION=$(grep "^version" bandix/Cargo.toml | cut -d '"' -f2)
+ARTIFACT_NAME="quickstart-netpolicy"
 echo "Build version: $VERSION"
 
 # 确保 release 目录存在
@@ -84,17 +85,18 @@ print_linker_for_target() {
 # 打包构建产物的辅助函数
 package_target() {
   local TARGET="$1"
-  local TARGET_DIR="$RELEASE_DIR/bandix-$VERSION-$TARGET"
-  local BINARY_PATH="target/$TARGET/release/bandix"
+  local TARGET_DIR="$RELEASE_DIR/$ARTIFACT_NAME-$VERSION-$TARGET"
+  local BINARY_PATH="target/$TARGET/release/$ARTIFACT_NAME"
 
   if [ -f "$BINARY_PATH" ]; then
     mkdir -p "$TARGET_DIR"
     cp "$BINARY_PATH" "$TARGET_DIR/"
     cp LICENSE "$TARGET_DIR/" 2>/dev/null || echo "⚠ Warning: LICENSE file does not exist"
+    cp NOTICE "$TARGET_DIR/" 2>/dev/null || echo "⚠ Warning: NOTICE file does not exist"
     cp README.md "$TARGET_DIR/" 2>/dev/null || echo "⚠ Warning: README.md file does not exist"
 
     echo "Creating compressed package..."
-    tar -czvf "$RELEASE_DIR/bandix-$VERSION-$TARGET.tar.gz" -C "$RELEASE_DIR" "bandix-$VERSION-$TARGET" > /dev/null
+    tar -czvf "$RELEASE_DIR/$ARTIFACT_NAME-$VERSION-$TARGET.tar.gz" -C "$RELEASE_DIR" "$ARTIFACT_NAME-$VERSION-$TARGET" > /dev/null
     rm -rf "$TARGET_DIR"
 
     echo "✓ Completed $TARGET build and packaging"
@@ -168,6 +170,7 @@ fi
 echo ""
 echo "Release packages located in $RELEASE_DIR directory"
 if [ $SUCCESS_COUNT -gt 0 ]; then
+  (cd "$RELEASE_DIR" && sha256sum ./*.tar.gz > SHA256SUMS)
   echo "Generated files:"
   ls -la $RELEASE_DIR/*.tar.gz 2>/dev/null | sed 's/^/  /' || echo "  No compressed packages generated"
 fi

@@ -197,7 +197,8 @@ impl TrafficMonitor {
 
         // 由于入口和出口共享同一个 eBPF 对象和映射，我们只需要读取一次
         let traffic_map = HashMap::<&MapData, [u8; 6], [u64; 4]>::try_from(
-            ebpf.map("MAC_TRAFFIC").ok_or(anyhow::anyhow!("Cannot find MAC_TRAFFIC map"))?,
+            ebpf.map("QSNP_TRAFFIC")
+                .ok_or(anyhow::anyhow!("Cannot find QSNP_TRAFFIC map"))?,
         )?;
 
         for entry in traffic_map.iter() {
@@ -522,8 +523,8 @@ impl TrafficMonitor {
         {
             let mut mac_rate_limits: HashMap<_, [u8; 6], [u64; 2]> = HashMap::try_from(
                 ebpf_mut
-                    .map_mut("MAC_RATE_LIMITS")
-                    .ok_or(anyhow::anyhow!("Cannot find MAC_RATE_LIMITS"))?,
+                    .map_mut("QSNP_RATE_LIMIT")
+                    .ok_or(anyhow::anyhow!("Cannot find QSNP_RATE_LIMIT"))?,
             )?;
 
             // 收集当前在 eBPF 映射中的所有 MAC
@@ -550,8 +551,8 @@ impl TrafficMonitor {
         if let Some(traffic_data) = traffic_data {
             let mut quota_thresholds_map: HashMap<_, [u8; 6], [u64; 6]> = HashMap::try_from(
                 ebpf_mut
-                    .map_mut("MAC_QUOTA_THRESHOLDS")
-                    .ok_or(anyhow::anyhow!("Cannot find MAC_QUOTA_THRESHOLDS"))?,
+                    .map_mut("QSNP_QUOTA_LIM")
+                    .ok_or(anyhow::anyhow!("Cannot find QSNP_QUOTA_LIM"))?,
             )?;
             let mut existing_quota_macs = std::collections::HashSet::new();
             for (mac, _) in quota_thresholds_map.iter().flatten() {
@@ -575,8 +576,8 @@ impl TrafficMonitor {
 
         let mut quota_blocked_map: HashMap<_, [u8; 6], u8> = HashMap::try_from(
             ebpf_mut
-                .map_mut("MAC_QUOTA_BLOCKED")
-                .ok_or(anyhow::anyhow!("Cannot find MAC_QUOTA_BLOCKED"))?,
+                .map_mut("QSNP_QUOTA_BLK")
+                .ok_or(anyhow::anyhow!("Cannot find QSNP_QUOTA_BLK"))?,
         )?;
         let mut existing_blocked = std::collections::HashSet::new();
         for (mac, _) in quota_blocked_map.iter().flatten() {
@@ -661,13 +662,15 @@ impl TrafficMonitor {
 }
 
 fn build_quota_thresholds(wan_total: u64, remaining: [u64; 6]) -> [u64; 6] {
-    remaining.map(|value| {
-        if value == u64::MAX {
-            u64::MAX
-        } else {
-            wan_total.saturating_add(value)
-        }
-    })
+    remaining.map(
+        |value| {
+            if value == u64::MAX {
+                u64::MAX
+            } else {
+                wan_total.saturating_add(value)
+            }
+        },
+    )
 }
 
 #[cfg(test)]

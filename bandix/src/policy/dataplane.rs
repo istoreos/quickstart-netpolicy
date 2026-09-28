@@ -92,7 +92,7 @@ impl KernelPolicyBackend for AyaKernelPolicyBackend {
         // Buckets derive from rate limits and must not retain tokens from a prior
         // policy. Quota block flags derive from thresholds and must be recomputed.
         clear_map(
-            AyaHashMap::<_, MacAddress, [u64; 3]>::try_from(
+            AyaHashMap::<_, MacAddress, [u64; 4]>::try_from(
                 ebpf.map_mut(RATE_BUCKET_MAP)
                     .ok_or_else(|| format!("{} map not found", RATE_BUCKET_MAP))?,
             )

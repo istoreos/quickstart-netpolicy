@@ -28,6 +28,8 @@ pub static QSNP_QUOTA_BLK: HashMap<[u8; 6], u8> = HashMap::with_max_entries(1024
 #[map]
 pub static QSNP_QUOTA_LIM: HashMap<[u8; 6], [u64; 6]> = HashMap::with_max_entries(1024, 0);
 
-// rate bucket status: [download token number, upload token number, last update time(ns)]
+// Rate bucket state: [download tokens, upload tokens, download timestamp,
+// upload timestamp]. Independent clocks prevent ACK packets in one direction
+// from truncating sub-byte refill time in the other direction.
 #[map]
-pub static QSNP_BUCKETS: HashMap<[u8; 6], [u64; 3]> = HashMap::with_max_entries(1024, 0);
+pub static QSNP_BUCKETS: HashMap<[u8; 6], [u64; 4]> = HashMap::with_max_entries(1024, 0);

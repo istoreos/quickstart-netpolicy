@@ -14,6 +14,12 @@ use network_types::ip::{Ipv4Hdr, Ipv6Hdr};
 use crate::utils::{get_current_time, is_subnet_ip, is_subnet_ipv6, min, ptr_at, subnet::QSNP_IPV4_NET};
 use maps::{QSNP_BUCKETS, QSNP_QUOTA_BLK, QSNP_QUOTA_LIM, QSNP_RATE_LIMIT, QSNP_TRAFFIC};
 
+// A one-second bucket is too small for low-rate TCP ingress policing: a short
+// receive burst empties it and repeated drops collapse the congestion window.
+// Refill still uses the configured bytes/second; this only permits a bounded
+// burst so low-rate policies remain usable.
+const MIN_RATE_BUCKET_BYTES: u64 = 1_048_576;
+
 // ============================================================================
 // Public Entry Points
 // ============================================================================
@@ -289,43 +295,36 @@ fn should_throttle(mac: &[u8; 6], data_len: u64, limits: (u64, u64), is_rx: bool
     if limit == 0 {
         return false; // No limit
     }
+    let capacity_rx = rate_bucket_capacity(limit_rx);
+    let capacity_tx = rate_bucket_capacity(limit_tx);
+    let capacity = if is_rx { capacity_rx } else { capacity_tx };
 
     let bucket = QSNP_BUCKETS.get_ptr_mut(mac);
     match bucket {
         Some(b) => unsafe {
             let now = get_current_time();
-            let elapsed = now.saturating_sub((*b)[2]); // Prevent time wrap-around
-
-            // 计算tokens to add for RX
-            if limit_rx > 0 {
-                let rx_tokens_to_add = (elapsed * limit_rx) / 1_000_000_000;
-                (*b)[0] = min((*b)[0].saturating_add(rx_tokens_to_add), limit_rx);
-            }
-
-            // 计算tokens to add for TX
-            if limit_tx > 0 {
-                let tx_tokens_to_add = (elapsed * limit_tx) / 1_000_000_000;
-                (*b)[1] = min((*b)[1].saturating_add(tx_tokens_to_add), limit_tx);
-            }
+            let idx = if is_rx { 0 } else { 1 };
+            let timestamp_idx = if is_rx { 2 } else { 3 };
+            let elapsed = now.saturating_sub((*b)[timestamp_idx]);
+            let tokens_to_add = (elapsed * limit) / 1_000_000_000;
+            (*b)[idx] = min((*b)[idx].saturating_add(tokens_to_add), capacity);
+            (*b)[timestamp_idx] = now;
 
             // 检查是否enough tokens available for current direction
-            let idx = if is_rx { 0 } else { 1 };
             if (*b)[idx] < data_len {
                 // Not enough tokens, need to throttle
-                (*b)[2] = now; // 更新timestamp
                 return true;
             }
 
             // Enough tokens, consume tokens and allow
             (*b)[idx] = (*b)[idx].saturating_sub(data_len);
-            (*b)[2] = now; // 更新timestamp
             false
         },
         None => {
             // First time seeing this MAC, initialize token bucket
             let now = get_current_time();
             // 开始with full buckets for both directions
-            let mut bucket_state = [limit_rx, limit_tx, now];
+            let mut bucket_state = [capacity_rx, capacity_tx, now, now];
 
             // Consume tokens for current direction
             let idx = if is_rx { 0 } else { 1 };
@@ -339,6 +338,17 @@ fn should_throttle(mac: &[u8; 6], data_len: u64, limits: (u64, u64), is_rx: bool
             let _ = QSNP_BUCKETS.insert(mac, &bucket_state, 0);
             false
         }
+    }
+}
+
+#[inline(always)]
+fn rate_bucket_capacity(limit: u64) -> u64 {
+    if limit == 0 {
+        0
+    } else if limit < MIN_RATE_BUCKET_BYTES {
+        MIN_RATE_BUCKET_BYTES
+    } else {
+        limit
     }
 }
 

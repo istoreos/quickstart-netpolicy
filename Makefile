@@ -1,4 +1,4 @@
-.PHONY: test build release preflight
+.PHONY: test build release preflight smoke-ipv4 smoke-ipv6
 
 test:
 	cargo test --locked -p quickstart-netpolicy -p quickstart-netpolicy-common
@@ -11,3 +11,9 @@ release:
 
 preflight:
 	./scripts/ops/preflight-device.sh "$${IFACE:-br-lan}"
+
+smoke-ipv4:
+	./scripts/smoke/topology-smoke.sh
+
+smoke-ipv6:
+	./scripts/smoke/ipv6-topology-smoke.sh

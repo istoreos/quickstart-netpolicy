@@ -13,6 +13,7 @@ B_TEST_IPV6="${B_TEST_IPV6:-fd28:1::1}"
 ENGINE_PORT="${ENGINE_PORT:-8765}"
 LIMIT_BITS="${LIMIT_BITS:-2000000}"
 IPERF_PORT="${IPERF_PORT:-18082}"
+OFFER_BITS="${OFFER_BITS:-20000000}"
 
 command -v jq >/dev/null
 remote() { host="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "$@"; }
@@ -58,12 +59,12 @@ remote "$C_HOST" "ip -6 route add '${B_TEST_IPV6}/128' via '${B_LINK_LOCAL}' dev
 remote "$B_HOST" "iperf3 -s -D -B '${B_TEST_IPV6}' -p '${IPERF_PORT}' -I /tmp/quickstart-netpolicy-ipv6.pid --logfile /tmp/quickstart-netpolicy-ipv6.log"
 server=1
 for attempt in 1 2 3 4 5; do
-    remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 1 >/dev/null" && break
+    remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 1 >/dev/null" && break
     [ "$attempt" -lt 5 ] || exit 1
     sleep 1
 done
-baseline_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 3 -J" | jq -r '.end.sum_received.bits_per_second|floor')"
-baseline_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 3 -R -J" | jq -r '.end.sum_received.bits_per_second|floor')"
+baseline_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 5 -J" | jq -r '.end.sum_received.bits_per_second|floor')"
+baseline_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 5 -R -J" | jq -r '.end.sum_received.bits_per_second|floor')"
 
 before="$(engine_get /api/v1/policies)"
 before_revision="$(printf '%s' "$before" | jq -r '.data.revision')"
@@ -73,13 +74,13 @@ apply_request="$(jq -cn --argjson plan "$(printf '%s' "$plan" | jq -c '.data')" 
 applied_snapshot="$(printf '%s' "$apply_request" | engine_post /api/v1/policies/apply)"
 printf '%s' "$applied_snapshot" | jq -e '.data.policies | any(.owner.product == "ipv6-topology-smoke" and .state == "effective")' >/dev/null
 applied=1
-limited_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 12 -J" | jq -r '[.intervals[3:][]|.sum.bits_per_second]|add/length|floor')"
-limited_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 12 -R -J" | jq -r '[.intervals[3:][]|.sum.bits_per_second]|add/length|floor')"
+limited_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 20 -J" | jq -r '.end.sum_received.bits_per_second|floor')"
+limited_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 20 -R -J" | jq -r '.end.sum_received.bits_per_second|floor')"
 
 printf '{"revision":%s}' "$before_revision" | engine_post /api/v1/policies/rollback >/dev/null
 applied=0
-rollback_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 3 -J" | jq -r '.end.sum_received.bits_per_second|floor')"
-rollback_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -t 3 -R -J" | jq -r '.end.sum_received.bits_per_second|floor')"
+rollback_upload="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 5 -J" | jq -r '.end.sum_received.bits_per_second|floor')"
+rollback_download="$(remote "$C_HOST" "iperf3 -c '${B_TEST_IPV6}' -p '${IPERF_PORT}' -u -b '${OFFER_BITS}' -t 5 -R -J" | jq -r '.end.sum_received.bits_per_second|floor')"
 printf 'MEASURE family=ipv6 limited_down_bps=%s limited_up_bps=%s baseline_down_bps=%s baseline_up_bps=%s rollback_down_bps=%s rollback_up_bps=%s\n' "$limited_download" "$limited_upload" "$baseline_download" "$baseline_upload" "$rollback_download" "$rollback_upload"
 for measured in "$limited_download" "$limited_upload"; do
     [ "$measured" -ge $((LIMIT_BITS / 2)) ]
@@ -91,4 +92,4 @@ done
 [ "$rollback_upload" -gt $((limited_upload * 4)) ]
 a_after="$(remote "$A_HOST" 'sha256sum /etc/config/network /etc/config/dhcp /etc/config/firewall')"
 [ "$a_before" = "$a_after" ]
-printf 'SUMMARY result=pass family=ipv6 limited_down_bps=%s limited_up_bps=%s baseline_down_bps=%s baseline_up_bps=%s rollback_down_bps=%s rollback_up_bps=%s identity=mac rollback=verified A=read-only\n' "$limited_download" "$limited_upload" "$baseline_download" "$baseline_upload" "$rollback_download" "$rollback_upload"
+printf 'SUMMARY result=pass family=ipv6 protocol=udp offered_bps=%s limited_down_bps=%s limited_up_bps=%s baseline_down_bps=%s baseline_up_bps=%s rollback_down_bps=%s rollback_up_bps=%s identity=mac rollback=verified A=read-only\n' "$OFFER_BITS" "$limited_download" "$limited_upload" "$baseline_download" "$baseline_upload" "$rollback_download" "$rollback_upload"

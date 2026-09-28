@@ -8,6 +8,8 @@ dist_dir="${DIST_DIR:-$project_dir/dist/$version}"
 toolchain_root="${MUSL_CROSS_DIR:-/config/musl-cross}"
 targets="${*:-x86_64-unknown-linux-musl}"
 mkdir -p "$dist_dir"
+source_date_epoch="${SOURCE_DATE_EPOCH:-$(git -C "$project_dir" show -s --format=%ct HEAD)}"
+git_sha="$(git -C "$project_dir" rev-parse HEAD)"
 
 linker_for() {
 	case "$1" in
@@ -43,10 +45,11 @@ for target in $targets; do
 	cp "$project_dir/LICENSE" "$project_dir/NOTICE" "$stage/payload/"
 	binary_sha="$(sha256sum "$stage/payload/quickstart-netpolicy" | awk '{print $1}')"
 	cat > "$stage/manifest.json" <<EOF
-{"product":"quickstart-netpolicy","version":"$version","target":"$target","policyInterfaceVersion":"1","binarySha256":"$binary_sha"}
+{"product":"quickstart-netpolicy","version":"$version","target":"$target","policyInterfaceVersion":"1","gitSha":"$git_sha","binarySha256":"$binary_sha"}
 EOF
 	archive="$dist_dir/quickstart-netpolicy-$version-$target.tar.gz"
-	tar -czf "$archive" -C "$stage" manifest.json payload
+	tar --sort=name --mtime="@$source_date_epoch" --owner=0 --group=0 --numeric-owner \
+		-C "$stage" -cf - manifest.json payload | gzip -n > "$archive"
 	archive_name="$(basename "$archive")"
 	archive_sha="$(sha256sum "$archive" | awk '{print $1}')"
 	printf '%s  %s\n' "$archive_sha" "$archive_name" >> "$dist_dir/SHA256SUMS"

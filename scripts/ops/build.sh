@@ -6,6 +6,11 @@ version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$project_dir/bandix/Cargo.tom
 [ -n "$version" ] || { echo "cannot determine version" >&2; exit 1; }
 dist_dir="${DIST_DIR:-$project_dir/dist/$version}"
 toolchain_root="${MUSL_CROSS_DIR:-/config/musl-cross}"
+target_dir="${CARGO_TARGET_DIR:-$project_dir/target}"
+case "$target_dir" in
+	/*) ;;
+	*) target_dir="$project_dir/$target_dir" ;;
+esac
 targets="${*:-x86_64-unknown-linux-musl}"
 mkdir -p "$dist_dir"
 source_date_epoch="${SOURCE_DATE_EPOCH:-$(git -C "$project_dir" show -s --format=%ct HEAD)}"
@@ -34,7 +39,7 @@ for target in $targets; do
 		cd "$project_dir"
 		cargo build --locked --release --target "$target" --bin quickstart-netpolicy
 	)
-	binary="$project_dir/target/$target/release/quickstart-netpolicy"
+	binary="$target_dir/$target/release/quickstart-netpolicy"
 	[ -x "$binary" ] || { echo "missing built binary: $binary" >&2; exit 1; }
 	stage="$(mktemp -d)"
 	trap 'rm -rf "$stage"' EXIT HUP INT TERM

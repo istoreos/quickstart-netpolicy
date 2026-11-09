@@ -4,6 +4,7 @@ use super::{
     PolicyErrorCode, PolicyMutationRequest, PolicyPlan, PolicySnapshot, PolicySource, StoredDevicePolicy, TrafficPolicyEngine,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -35,6 +36,8 @@ struct TransactionRecord {
     desired: PolicySnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +98,9 @@ pub struct NativePolicyEngine<D: PolicyDataPlane> {
     current: PolicySnapshot,
     last_transaction: Option<TransactionRecord>,
     interface: String,
+    recovery_required: bool,
+    context: super::EngineContext,
+    pending_plans: RefCell<BTreeMap<String, String>>,
 }
 
 impl<D: PolicyDataPlane> NativePolicyEngine<D> {
@@ -131,14 +137,45 @@ impl<D: PolicyDataPlane> NativePolicyEngine<D> {
         data_plane
             .verify(&current)
             .map_err(|error| unavailable(format!("verify persisted policy: {}", error)))?;
+        let interface = interface.into();
+        let interface_index = crate::engine_guard::interface_index(&interface);
         Ok(Self {
+            context: super::EngineContext {
+                network_id: "lan".into(),
+                instance_id: "main".into(),
+                epoch: uuid::Uuid::new_v4().to_string(),
+                interface_index,
+            },
+            pending_plans: RefCell::new(BTreeMap::new()),
             store,
             journal,
             data_plane,
             current,
             last_transaction,
-            interface: interface.into(),
+            interface,
+            recovery_required: false,
         })
+    }
+
+    pub fn with_context(mut self, network_id: &str, instance_id: &str) -> Self {
+        self.context.network_id = network_id.to_string();
+        self.context.instance_id = instance_id.to_string();
+        self
+    }
+
+    pub fn with_runtime_epoch(mut self, epoch: &str) -> Self {
+        self.context.epoch = epoch.to_string();
+        self
+    }
+
+    fn ensure_interface(&self) -> Result<(), PolicyError> {
+        if self.recovery_required {
+            return Err(unavailable("transaction recovery required; restart this instance"));
+        }
+        if self.context.interface_index != 0 && crate::engine_guard::interface_index(&self.interface) != self.context.interface_index {
+            return Err(unavailable("interface identity changed; restart and plan again"));
+        }
+        Ok(())
     }
 
     fn build_desired(&self, request: &PolicyMutationRequest) -> Result<PolicySnapshot, PolicyError> {
@@ -195,6 +232,7 @@ impl<D: PolicyDataPlane> NativePolicyEngine<D> {
         record.state = TransactionState::RolledBack;
         self.journal.save(record)?;
         self.last_transaction = Some(record.clone());
+        self.recovery_required = false;
         Ok(())
     }
 }
@@ -205,6 +243,7 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
     }
 
     fn plan(&self, request: &PolicyMutationRequest) -> Result<PolicyPlan, PolicyError> {
+        self.ensure_interface()?;
         if request.expected_revision != self.current.revision {
             return Err(PolicyError {
                 code: PolicyErrorCode::RevisionConflict,
@@ -244,8 +283,15 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
                 device: super::DeviceIdentity::Mac { value },
             });
         }
+        let id = uuid::Uuid::new_v4().to_string();
+        let fingerprint = serde_json::to_string(request).map_err(|error| unavailable(error.to_string()))?;
+        let mut pending = self.pending_plans.borrow_mut();
+        if pending.len() >= 64 {
+            pending.clear();
+        }
+        pending.insert(id.clone(), fingerprint);
         Ok(PolicyPlan {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             base_revision: self.current.revision,
             next_revision: desired.revision,
             changes,
@@ -254,10 +300,26 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
     }
 
     fn apply(&mut self, plan: &PolicyPlan, request: &PolicyMutationRequest) -> Result<PolicySnapshot, PolicyError> {
+        self.ensure_interface()?;
+        let fingerprint = serde_json::to_string(request).map_err(|error| unavailable(error.to_string()))?;
         if let Some(record) = &self.last_transaction {
             if record.idempotency_key == request.idempotency_key && record.state == TransactionState::Committed {
+                if record.request_fingerprint.as_deref() != Some(&fingerprint) {
+                    return Err(PolicyError {
+                        code: PolicyErrorCode::Conflict,
+                        message: "idempotency key belongs to a different or legacy mutation; use a new key".into(),
+                        field: Some("idempotencyKey".into()),
+                    });
+                }
                 return Ok(self.current.clone());
             }
+        }
+        if self.pending_plans.borrow().get(&plan.id) != Some(&fingerprint) {
+            return Err(PolicyError {
+                code: PolicyErrorCode::Conflict,
+                message: "plan belongs to another instance, runtime, or mutation; plan again".into(),
+                field: Some("plan".into()),
+            });
         }
         if plan.base_revision != self.current.revision || request.expected_revision != self.current.revision {
             return Err(PolicyError {
@@ -281,8 +343,10 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
             before: self.current.clone(),
             desired: desired.clone(),
             error: None,
+            request_fingerprint: Some(fingerprint),
         };
         self.journal.save(&record)?;
+        self.recovery_required = true;
         if let Err(error) = self.data_plane.apply(&desired) {
             self.rollback_record(&mut record, format!("apply failed: {}", error))?;
             return Err(unavailable("data-plane apply failed"));
@@ -310,6 +374,7 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
         self.journal.save(&record)?;
         self.current = committed.clone();
         self.last_transaction = Some(record);
+        self.recovery_required = false;
         Ok(committed)
     }
 
@@ -334,10 +399,15 @@ impl<D: PolicyDataPlane> TrafficPolicyEngine for NativePolicyEngine<D> {
 
     fn health(&self) -> EngineHealth {
         EngineHealth {
-            state: EngineHealthState::Healthy,
+            context: Some(self.context.clone()),
+            state: if self.ensure_interface().is_ok() {
+                EngineHealthState::Healthy
+            } else {
+                EngineHealthState::Unavailable
+            },
             interface: self.interface.clone(),
             revision: self.current.revision,
-            reasons: Vec::new(),
+            reasons: self.ensure_interface().err().map(|e| vec![e.message]).unwrap_or_default(),
         }
     }
 }
@@ -504,6 +574,7 @@ mod tests {
                 before,
                 desired,
                 error: None,
+                request_fingerprint: None,
             })
             .unwrap();
         let restores = Rc::new(Cell::new(0));
@@ -519,6 +590,49 @@ mod tests {
         .unwrap();
         assert_eq!(engine.inspect().unwrap().revision, 0);
         assert_eq!(restores.get(), 1);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn plans_cannot_cross_instances_or_change_mutation() {
+        let first_path = directory();
+        let second_path = directory();
+        let first = engine(&first_path, FakeDataPlane::default()).with_context("lan", "main");
+        let mut second = engine(&second_path, FakeDataPlane::default()).with_context("office", "office");
+        let mutation = request(0, "same-key");
+        let foreign = first.plan(&mutation).unwrap();
+        assert!(second.apply(&foreign, &mutation).is_err());
+        let local = second.plan(&mutation).unwrap();
+        let mut changed = mutation.clone();
+        changed.policies[0].rate_limit.as_mut().unwrap().upload_bits_per_second = 1_000_000;
+        assert!(second.apply(&local, &changed).is_err());
+        second.apply(&local, &mutation).unwrap();
+        assert!(second.apply(&local, &changed).is_err());
+        assert_eq!(first.inspect().unwrap().revision, 0);
+        assert_eq!(second.inspect().unwrap().revision, 1);
+        let first_health = first.health();
+        let second_health = second.health();
+        assert_ne!(
+            first_health.context.as_ref().unwrap().epoch,
+            second_health.context.as_ref().unwrap().epoch
+        );
+        assert_eq!(second_health.context.unwrap().network_id, "office");
+        fs::remove_dir_all(first_path).unwrap();
+        fs::remove_dir_all(second_path).unwrap();
+    }
+
+    #[test]
+    fn restart_invalidates_pending_plan_but_retains_committed_replay() {
+        let path = directory();
+        let mut original = engine(&path, FakeDataPlane::default());
+        let mutation = request(0, "committed");
+        let plan = original.plan(&mutation).unwrap();
+        original.apply(&plan, &mutation).unwrap();
+        let next = request(1, "pending");
+        let stale = original.plan(&next).unwrap();
+        let mut restarted = engine(&path, FakeDataPlane::default());
+        assert!(restarted.apply(&stale, &next).is_err());
+        assert_eq!(restarted.apply(&plan, &mutation).unwrap().revision, 1);
         fs::remove_dir_all(path).unwrap();
     }
 }

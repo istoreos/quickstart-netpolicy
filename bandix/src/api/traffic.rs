@@ -67,6 +67,10 @@ pub struct DeviceInfo {
 /// 设备响应结构
 #[derive(Serialize, Deserialize)]
 pub struct DevicesResponse {
+    #[serde(rename = "counterEpoch")]
+    pub counter_epoch: String,
+    #[serde(rename = "sampledAtMs")]
+    pub sampled_at_ms: u64,
     #[serde(rename = "d")]
     pub devices: Vec<DeviceInfo>,
 }
@@ -894,7 +898,7 @@ impl TrafficApiHandler {
             a_ip.cmp(&b_ip)
         });
 
-        let response = DevicesResponse { devices };
+        let response = DevicesResponse { devices, sampled_at_ms: self.realtime_manager.last_sample_ms(), counter_epoch: self.options.common.runtime_epoch.clone() };
         let api_response = ApiResponse::success(response);
         let body = serde_json::to_string(&api_response)?;
         Ok(HttpResponse::ok(body))

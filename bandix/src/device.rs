@@ -407,6 +407,7 @@ impl DeviceManager {
         for p in parts.iter().rev() {
             match normalize_token(p).as_str() {
                 "REACHABLE" => return Some("REACHABLE"),
+                "PERMANENT" => return Some("PERMANENT"),
                 "STALE" => return Some("STALE"),
                 "DELAY" => return Some("DELAY"),
                 "PROBE" => return Some("PROBE"),
@@ -905,6 +906,13 @@ impl DeviceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permanent_neighbors_are_known_devices_without_claiming_live_reachability() {
+        let parts = "10.201.0.3 lladdr 02:00:00:00:00:01 PERMANENT".split_whitespace().collect::<Vec<_>>();
+        assert_eq!(DeviceManager::extract_neighbor_state(&parts), Some("PERMANENT"));
+        assert_eq!(DeviceManager::extract_neighbor_state(&["10.201.0.3", "INCOMPLETE"]), Some("INCOMPLETE"));
+    }
 
     #[test]
     fn test_is_special_mac_address() {

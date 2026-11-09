@@ -111,6 +111,17 @@ pub async fn load_shared(
         )))
         .map_err(|e| anyhow::anyhow!("Failed to load eBPF program: {}", e))?;
 
+    // A killed netlink-based process can leave its filters behind. The caller
+    // holds this interface's exclusive engine lease. Reclaim only our exact
+    // program names on this device; never remove clsact or another engine's
+    // filters. TCX links disappear automatically with their owning FDs.
+    for (direction, name) in [(TcAttachType::Ingress, "qsnp_ingress"), (TcAttachType::Egress, "qsnp_egress")] {
+        match tc::qdisc_detach_program(&iface, direction, name) {
+            Ok(()) => log::info!("Reclaimed stale {} link on {}", name, iface),
+            Err(error) => log::debug!("No stale {} link reclaimed on {}: {}", name, iface, error),
+        }
+    }
+
     if let Err(e) = tc::qdisc_add_clsact(&iface) {
         log::debug!("Failed to add clsact qdisc (may already exist): {}", e);
     }

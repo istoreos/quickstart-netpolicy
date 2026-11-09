@@ -102,6 +102,7 @@ impl TrafficMonitor {
 
         if let Err(e) = self.process_traffic_data(ctx, &ingress_ebpf).await {
             log::error!("Failed to process traffic data: {}", e);
+            return;
         }
 
         // Policy maps are reconciled transactionally by NativePolicyEngine.

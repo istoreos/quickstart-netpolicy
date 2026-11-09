@@ -135,11 +135,15 @@ struct EngineCapabilities {
     data_plane: &'static str,
     modules: Vec<String>,
     protocol_compatibility: Vec<&'static str>,
+    scope_context_version: u32,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EngineHealthDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<crate::policy::EngineContext>,
+    interface: Option<String>,
     state: &'static str,
     pid: u32,
     uptime_seconds: u64,
@@ -208,6 +212,7 @@ impl ApiRouter {
                 data_plane: "ebpf-tc",
                 modules,
                 protocol_compatibility: vec!["bandix-http-v0.12"],
+                scope_context_version: 1,
             }))?;
             return Ok(HttpResponse::ok(body));
         }
@@ -215,7 +220,7 @@ impl ApiRouter {
             if request.method != "GET" {
                 return Ok(HttpResponse::error(405, "Method not allowed".to_string()));
             }
-            let (state, data_plane, reasons) = match &self.policy_engine {
+            let (state, data_plane, reasons, context, interface) = match &self.policy_engine {
                 Some(engine) => match engine.lock() {
                     Ok(engine) => {
                         let health = engine.health();
@@ -225,17 +230,29 @@ impl ApiRouter {
                             crate::policy::EngineHealthState::Unavailable => "unavailable",
                             crate::policy::EngineHealthState::Conflict => "conflict",
                         };
-                        (state, "ready", health.reasons)
+                        (state, "ready", health.reasons, health.context, Some(health.interface))
                     }
-                    Err(_) => ("unavailable", "unavailable", vec!["policy engine lock is poisoned".to_string()]),
+                    Err(_) => (
+                        "unavailable",
+                        "unavailable",
+                        vec!["policy engine lock is poisoned".to_string()],
+                        None,
+                        None,
+                    ),
                 },
-                None if self.handlers.contains_key("traffic") => {
-                    ("degraded", "initializing", vec!["policy engine is not initialized".to_string()])
-                }
-                None => ("healthy", "disabled", Vec::new()),
+                None if self.handlers.contains_key("traffic") => (
+                    "degraded",
+                    "initializing",
+                    vec!["policy engine is not initialized".to_string()],
+                    None,
+                    None,
+                ),
+                None => ("healthy", "disabled", Vec::new(), None, None),
             };
             let body = serde_json::to_string(&ApiResponse::success(EngineHealthDocument {
                 state,
+                context,
+                interface,
                 pid: std::process::id(),
                 uptime_seconds: self.started_at.elapsed().as_secs(),
                 resident_memory_kib: resident_memory_kib(),
@@ -267,12 +284,17 @@ impl ApiRouter {
             return Ok(self.with_policy_engine(|engine| engine.apply(&payload.plan, &payload.request)));
         }
         if request.path == "/api/v1/policies/verify" && request.method == "POST" {
-            let snapshot: crate::policy::PolicySnapshot = match parse_json_body(request) {
+            let payload: serde_json::Value = match parse_json_body(request) {
                 Ok(value) => value,
                 Err(error) => return Ok(json_bad_request(error)),
             };
-            return Ok(self.with_policy_engine(|engine| engine.verify(&snapshot).map(|_| snapshot)));
+            return Ok(self.with_policy_engine(|engine| {
+                let current = engine.inspect()?;
+                let snapshot = verification_snapshot(payload, &current)?;
+                engine.verify(&snapshot).map(|_| snapshot)
+            }));
         }
+
         if request.path == "/api/v1/policies/rollback" && request.method == "POST" {
             let payload: PolicyRollbackRequest = match parse_json_body(request) {
                 Ok(value) => value,
@@ -356,9 +378,58 @@ fn resident_memory_kib() -> Option<u64> {
         .ok()
 }
 
+// Original v1 Quickstart clients omitted two server-owned record fields when
+// echoing an applied snapshot. Fill only those fields from the current record,
+// then require an exact snapshot match before checking the data plane.
+fn verification_snapshot(
+    mut payload: serde_json::Value,
+    current: &crate::policy::PolicySnapshot,
+) -> Result<crate::policy::PolicySnapshot, crate::policy::PolicyError> {
+    let expected = serde_json::to_value(current).map_err(|e| crate::policy::PolicyError::validation("snapshot", e.to_string()))?;
+    if let Some(policies) = payload.get_mut("policies").and_then(|v| v.as_array_mut()) {
+        for policy in policies {
+            let id = policy.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(record) = expected["policies"]
+                .as_array()
+                .and_then(|records| records.iter().find(|record| record["id"].as_str() == Some(id)))
+            {
+                if let Some(fields) = policy.as_object_mut() {
+                    for field in ["revision", "source"] {
+                        fields.entry(field).or_insert_with(|| record[field].clone());
+                    }
+                }
+            }
+        }
+    }
+    let snapshot: crate::policy::PolicySnapshot =
+        serde_json::from_value(payload).map_err(|e| crate::policy::PolicyError::validation("snapshot", e.to_string()))?;
+    if snapshot != *current {
+        return Err(crate::policy::PolicyError::validation(
+            "snapshot",
+            "policy snapshot changed; inspect again",
+        ));
+    }
+    Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verification_accepts_only_server_owned_legacy_omissions() {
+        let full = serde_json::json!({"schemaVersion":1,"revision":7,"policies":[{"id":"device","revision":7,"source":"quickstart","owner":{"product":"quickstart","instance":"local-router"},"device":{"kind":"mac","value":"02:00:00:00:00:55"},"rateLimit":{"enabled":true,"uploadBitsPerSecond":1000000,"downloadBitsPerSecond":2000000},"state":"effective"}]});
+        let current: crate::policy::PolicySnapshot = serde_json::from_value(full.clone()).unwrap();
+        let mut legacy = full;
+        legacy["policies"][0].as_object_mut().unwrap().remove("revision");
+        legacy["policies"][0].as_object_mut().unwrap().remove("source");
+        assert_eq!(verification_snapshot(legacy.clone(), &current).unwrap(), current);
+        let mut changed = legacy.clone();
+        changed["policies"][0]["rateLimit"]["uploadBitsPerSecond"] = 999.into();
+        assert!(verification_snapshot(changed, &current).is_err());
+        legacy["revision"] = 6.into();
+        assert!(verification_snapshot(legacy, &current).is_err());
+    }
 
     struct StubPolicyEngine;
 
@@ -399,6 +470,7 @@ mod tests {
 
         fn health(&self) -> crate::policy::EngineHealth {
             crate::policy::EngineHealth {
+                context: None,
                 state: crate::policy::EngineHealthState::Healthy,
                 interface: "br-lan".to_string(),
                 revision: 7,
@@ -578,7 +650,7 @@ pub async fn send_http_response(stream: &mut TcpStream, response: &HttpResponse)
     };
 
     let http_response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status,
         status_text,
         response.content_type,

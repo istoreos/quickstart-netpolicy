@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::collections::BTreeSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 const LEASE_ROOT: &str = "/var/run/quickstart-netpolicy";
@@ -32,9 +34,12 @@ struct LeaseRecord {
     interface: String,
     pid: u32,
     token: String,
+    #[serde(default)]
+    locking: bool,
 }
 
 pub struct EngineLease {
+    file: File,
     path: PathBuf,
     token: String,
 }
@@ -47,42 +52,55 @@ impl EngineLease {
     fn acquire_at(root: &Path, proc_root: &Path, interface: &str) -> anyhow::Result<Self> {
         validate_interface(interface)?;
         fs::create_dir_all(root)?;
-        let path = root.join(format!("{}.lease", interface));
-        for _ in 0..2 {
-            let token = uuid::Uuid::new_v4().to_string();
-            let record = LeaseRecord {
-                product: "quickstart-netpolicy".to_string(),
-                interface: interface.to_string(),
-                pid: std::process::id(),
-                token: token.clone(),
-            };
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
-                Ok(mut file) => {
-                    let payload = serde_json::to_vec(&record)?;
-                    file.write_all(&payload)?;
-                    file.sync_all()?;
-                    return Ok(Self { path, token });
-                }
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    let existing = fs::read(&path)
-                        .ok()
-                        .and_then(|bytes| serde_json::from_slice::<LeaseRecord>(&bytes).ok());
-                    if let Some(existing) = existing {
-                        if proc_root.join(existing.pid.to_string()).exists() {
-                            anyhow::bail!(
-                                "interface '{}' is already owned by {} process {}",
-                                interface,
-                                existing.product,
-                                existing.pid
-                            );
-                        }
-                    }
-                    fs::remove_file(&path)?;
-                }
-                Err(error) => return Err(error.into()),
+        let registry = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join(".registry.lock"))?;
+        // Serialize the short discovery/acquire step. Different LANs starting
+        // together are valid and must not become transient engine conflicts.
+        if unsafe { libc::flock(registry.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        for entry in fs::read_dir(root)?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(other) = name.strip_suffix(".lease") else { continue };
+            if other == interface || !interfaces_overlap(interface, other) {
+                continue;
+            }
+            let occupied = exclusive_file(&entry.path()).is_err();
+            let legacy_live = fs::read(entry.path())
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<LeaseRecord>(&bytes).ok())
+                .is_some_and(|record| !record.locking && legacy_lease_is_live(proc_root, &record));
+            if occupied || legacy_live {
+                anyhow::bail!("interface '{}' overlaps active engine interface '{}'", interface, other);
             }
         }
-        anyhow::bail!("failed to acquire interface '{}' lease", interface)
+        let path = root.join(format!("{}.lease", interface));
+        let mut file = exclusive_file(&path)?;
+        let mut existing_bytes = Vec::new();
+        file.read_to_end(&mut existing_bytes)?;
+        if let Ok(existing) = serde_json::from_slice::<LeaseRecord>(&existing_bytes) {
+            // Compatibility with a previous release that did not hold flock.
+            if !existing.locking && legacy_lease_is_live(proc_root, &existing) {
+                anyhow::bail!("interface '{}' is owned by legacy process {}", interface, existing.pid);
+            }
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let record = LeaseRecord {
+            product: "quickstart-netpolicy".into(),
+            interface: interface.into(),
+            pid: std::process::id(),
+            token: token.clone(),
+            locking: true,
+        };
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&serde_json::to_vec(&record)?)?;
+        file.sync_all()?;
+        Ok(Self { file, path, token })
     }
 }
 
@@ -94,9 +112,113 @@ impl Drop for EngineLease {
             .map(|record| record.token == self.token)
             .unwrap_or(false);
         if owned {
-            let _ = fs::remove_file(&self.path);
+            let _ = self.file.set_len(0);
         }
     }
+}
+
+// Lock files are never unlinked: removing a locked inode lets another process
+// create and lock a new inode at the same pathname.
+fn exclusive_file(path: &Path) -> anyhow::Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        anyhow::bail!("resource '{}' is already owned by another engine", path.display());
+    }
+    Ok(file)
+}
+
+#[derive(Serialize, Deserialize)]
+struct DataScope {
+    schema_version: u32,
+    network_id: String,
+}
+
+pub fn acquire_data_directory(data_dir: &str, network_id: &str, instance_id: &str) -> anyhow::Result<File> {
+    fs::create_dir_all(data_dir)?;
+    let canonical = fs::canonicalize(data_dir)?;
+    let lease = exclusive_file(&canonical.join(".engine.lock"))?;
+    let marker = canonical.join(".network-scope.json");
+    match fs::read(&marker) {
+        Ok(bytes) => {
+            let stored: DataScope = serde_json::from_slice(&bytes)?;
+            if stored.schema_version != 1 || stored.network_id != network_id {
+                anyhow::bail!("data directory belongs to another network; use a separate directory");
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let occupied = fs::read_dir(&canonical)?.any(|entry| entry.map(|item| item.file_name() != ".engine.lock").unwrap_or(true));
+            // Only the original lan/main contract can adopt pre-scope data.
+            if occupied && (network_id != "lan" || instance_id != "main") {
+                anyhow::bail!("unscoped existing data cannot be assigned to an additional LAN");
+            }
+            let temporary = canonical.join(format!(".network-scope-{}.tmp", uuid::Uuid::new_v4()));
+            let mut file = OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+            file.write_all(&serde_json::to_vec(&DataScope { schema_version: 1, network_id: network_id.into() })?)?;
+            file.sync_all()?;
+            fs::rename(&temporary, &marker)?;
+            File::open(&canonical)?.sync_all()?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(lease)
+}
+
+pub fn interface_index(interface: &str) -> u32 {
+    fs::read_to_string(format!("/sys/class/net/{}/ifindex", interface))
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn lower_interfaces(interface: &str, seen: &mut BTreeSet<String>) {
+    if !seen.insert(interface.into()) || seen.len() > 64 {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(format!("/sys/class/net/{}", interface)) {
+        for entry in entries.flatten() {
+            if let Some(lower) = entry.file_name().to_string_lossy().strip_prefix("lower_") {
+                lower_interfaces(lower, seen);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(format!("/sys/class/net/{}/brif", interface)) {
+        for entry in entries.flatten() {
+            lower_interfaces(&entry.file_name().to_string_lossy(), seen);
+        }
+    }
+}
+
+fn interfaces_overlap(left: &str, right: &str) -> bool {
+    let mut lower = BTreeSet::new();
+    lower_interfaces(left, &mut lower);
+    if lower.contains(right) {
+        return true;
+    }
+    lower.clear();
+    lower_interfaces(right, &mut lower);
+    lower.contains(left)
+}
+
+fn legacy_lease_is_live(proc_root: &Path, record: &LeaseRecord) -> bool {
+    let path = proc_root.join(record.pid.to_string());
+    let bytes = match fs::read(path.join("cmdline")) {
+        Ok(bytes) => bytes,
+        Err(_) => return path.exists(),
+    };
+    let args: Vec<_> = bytes
+        .split(|b| *b == 0)
+        .filter_map(|b| std::str::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .collect();
+    args.first()
+        .is_some_and(|arg| Path::new(arg).file_name().is_some_and(|name| name == "quickstart-netpolicy"))
+        && (args.windows(2).any(|pair| pair[0] == "--iface" && pair[1] == record.interface)
+            || args.iter().any(|arg| arg.strip_prefix("--iface=") == Some(&record.interface)))
 }
 
 fn validate_interface(interface: &str) -> anyhow::Result<()> {
@@ -165,12 +287,17 @@ pub fn ensure_no_external_engine(interface: &str) -> anyhow::Result<()> {
 }
 
 pub fn start_conflict_monitor(interface: String, shutdown: std::sync::Arc<tokio::sync::Notify>) -> tokio::task::JoinHandle<()> {
+    let original_index = interface_index(&interface);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    if original_index != 0 && interface_index(&interface) != original_index {
+                        log::error!("interface identity changed; stopping this instance");
+                        shutdown.notify_waiters(); break;
+                    }
                     if let Some(conflict) = external_engine_conflict(Path::new("/proc"), &interface) {
                         log::error!("runtime traffic-engine conflict detected; stopping safely: {}", conflict);
                         shutdown.notify_waiters();
@@ -191,6 +318,27 @@ mod tests {
         let path = std::env::temp_dir().join(format!("qsnp-guard-{}-{}", name, uuid::Uuid::new_v4()));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn data_scope_survives_restart_and_rejects_network_rebinding() {
+        let root = directory("scope");
+        drop(acquire_data_directory(root.to_str().unwrap(), "office", "office").unwrap());
+        drop(acquire_data_directory(root.to_str().unwrap(), "office", "renamed-instance").unwrap());
+        assert!(acquire_data_directory(root.to_str().unwrap(), "guest", "guest").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_legacy_default_can_adopt_nonempty_unscoped_data() {
+        let root = directory("legacy-scope");
+        fs::write(root.join("policy.json"), "existing").unwrap();
+        assert!(acquire_data_directory(root.to_str().unwrap(), "office", "office").is_err());
+        drop(acquire_data_directory(root.to_str().unwrap(), "lan", "main").unwrap());
+        assert_eq!(fs::read_to_string(root.join("policy.json")).unwrap(), "existing");
+        fs::write(root.join(".network-scope.json"), "broken").unwrap();
+        assert!(acquire_data_directory(root.to_str().unwrap(), "lan", "main").is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -227,6 +375,7 @@ mod tests {
                 interface: "br-lan".to_string(),
                 pid: 999_999,
                 token: "stale".to_string(),
+                locking: false,
             })
             .unwrap(),
         )
@@ -239,6 +388,7 @@ mod tests {
                 interface: "br-lan".to_string(),
                 pid: 1,
                 token: "other".to_string(),
+                locking: false,
             })
             .unwrap(),
         )
@@ -255,6 +405,41 @@ mod tests {
         fs::write(root.join("4242/cmdline"), b"/usr/bin/bandix\0--iface\0br-lan\0").unwrap();
         assert_eq!(external_engine_conflict(&root, "br-lan").unwrap().pid, Some(4242));
         assert!(external_engine_conflict(&root, "br-guest").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn data_directory_lock_rejects_aliases_and_releases_on_drop() {
+        let root = directory("data-lock");
+        let data = root.join("data");
+        let lease = acquire_data_directory(data.to_str().unwrap(), "lan", "main").unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&data, &alias).unwrap();
+        assert!(acquire_data_directory(alias.to_str().unwrap(), "lan", "main").is_err());
+        drop(lease);
+        assert!(acquire_data_directory(alias.to_str().unwrap(), "lan", "main").is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_pid_reuse_does_not_claim_an_unrelated_process() {
+        let root = directory("pid-reuse");
+        fs::create_dir_all(root.join("123")).unwrap();
+        let record = LeaseRecord {
+            product: "quickstart-netpolicy".into(),
+            interface: "br-lan".into(),
+            pid: 123,
+            token: "legacy".into(),
+            locking: false,
+        };
+        fs::write(root.join("123/cmdline"), b"/bin/unrelated\0--iface\0br-lan\0").unwrap();
+        assert!(!legacy_lease_is_live(&root, &record));
+        fs::write(
+            root.join("123/cmdline"),
+            b"/opt/current/quickstart-netpolicy\0--iface\0br-lan\0",
+        )
+        .unwrap();
+        assert!(legacy_lease_is_live(&root, &record));
         fs::remove_dir_all(root).unwrap();
     }
 }

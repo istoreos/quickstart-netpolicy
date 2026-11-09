@@ -8,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // ============================================================================
@@ -473,6 +474,7 @@ impl LongTermRing {
 
 /// 实时数据内存环形管理器（1秒采样）
 pub struct RealtimeRingManager {
+    last_sample_ms: AtomicU64,
     pub rings: Arc<Mutex<HashMap<[u8; 6], RealtimeRing>>>,
     pub capacity: u32,
 }
@@ -481,6 +483,7 @@ impl RealtimeRingManager {
     pub fn new(_base_dir: String, capacity: u32) -> Self {
         Self {
             rings: Arc::new(Mutex::new(HashMap::new())),
+            last_sample_ms: AtomicU64::new(0),
             capacity,
         }
     }
@@ -491,6 +494,7 @@ impl RealtimeRingManager {
         current_ts_ms: u64,
         rows: &Vec<([u8; 6], crate::device::UnifiedDevice)>,
     ) -> Result<(), anyhow::Error> {
+        self.last_sample_ms.store(current_ts_ms, Ordering::Release);
         if rows.is_empty() {
             return Ok(());
         }
@@ -527,6 +531,8 @@ impl RealtimeRingManager {
 
         Ok(())
     }
+
+    pub fn last_sample_ms(&self) -> u64 { self.last_sample_ms.load(Ordering::Acquire) }
 
     pub fn remove_device(&self, mac: &[u8; 6]) {
         let mut rings = self.rings.lock().unwrap();

@@ -56,6 +56,12 @@ impl TcBackend {
 /// 所有命令共享的通用参数
 #[derive(Debug, Args, Clone)]
 pub struct CommonArgs {
+    #[clap(skip = uuid::Uuid::new_v4().to_string())]
+    pub runtime_epoch: String,
+    #[clap(long, default_value = "lan", help = "Logical network bound to this instance")]
+    pub network_id: String,
+    #[clap(long, default_value = "main", help = "Stable service instance identity")]
+    pub instance_id: String,
     #[clap(long, help = "Network interface to monitor (required)")]
     pub iface: String,
 
@@ -154,7 +160,7 @@ pub struct TrafficArgs {
     #[clap(
         long,
         default_value = "",
-        help = "Additional local subnets (comma-separated CIDR notation, e.g. '192.168.2.0/24,10.0.0.0/8'). Empty = only interface subnet."
+        help = "Additional local IPv4/IPv6 subnets (comma-separated CIDRs). OpenWrt LAN prefixes are discovered automatically."
     )]
     pub traffic_additional_subnets: String,
 
@@ -352,7 +358,7 @@ impl Options {
 }
 
 // 解析 CIDR 格式的子网（例如 "192.168.2.0/24"）
-fn parse_cidr(cidr: &str) -> Result<([u8; 4], [u8; 4]), anyhow::Error> {
+pub(crate) fn parse_cidr(cidr: &str) -> Result<([u8; 4], [u8; 4]), anyhow::Error> {
     let parts: Vec<&str> = cidr.split('/').collect();
     if parts.len() != 2 {
         return Err(anyhow::anyhow!(
@@ -426,6 +432,11 @@ pub fn build_allowed_ipv4_subnets(subnet_info: &SubnetInfo, additional_subnets: 
 
 // 验证参数
 fn validate_arguments(opt: &Options) -> Result<(), anyhow::Error> {
+    for name in [&opt.common.network_id, &opt.common.instance_id] {
+        if name.is_empty() || name.len() > 64 || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) {
+            anyhow::bail!("invalid network or instance identity");
+        }
+    }
     // 检查网络接口是否存在
     if get_interface_info(opt.iface()).is_none() {
         return Err(anyhow::anyhow!("Network interface '{}' does not exist", opt.iface()));
@@ -477,18 +488,7 @@ fn validate_arguments(opt: &Options) -> Result<(), anyhow::Error> {
             return Err(anyhow::anyhow!("traffic_flush_interval must be greater than 0"));
         }
 
-        // 验证额外子网的 CIDR 格式
-        let additional_subnets = opt.traffic_additional_subnets().trim();
-        if !additional_subnets.is_empty() {
-            for subnet_cidr in additional_subnets.split(',') {
-                let subnet_cidr = subnet_cidr.trim();
-                if subnet_cidr.is_empty() {
-                    continue;
-                }
-                // 尝试解析以验证格式
-                parse_cidr(subnet_cidr).map_err(|e| anyhow::anyhow!("Invalid subnet CIDR '{}': {}", subnet_cidr, e))?;
-            }
-        }
+        crate::local_networks::parse_additional(opt.traffic_additional_subnets())?;
 
         if opt.traffic_neighbor_flush_enable() && opt.traffic_neighbor_flush_interval() == 0 {
             return Err(anyhow::anyhow!(
@@ -551,7 +551,8 @@ fn write_ipv6_subnets(
     ipv6_subnet_info: &mut Array<aya::maps::MapData, [u8; 32]>,
     ipv6_addresses: &[([u8; 16], u8)],
 ) -> Result<(), anyhow::Error> {
-    for (idx, (ipv6_addr, prefix_len)) in ipv6_addresses.iter().enumerate().take(16) {
+    anyhow::ensure!(ipv6_addresses.len() <= 16, "IPv6 prefix capacity exceeded");
+    for (idx, (ipv6_addr, prefix_len)) in ipv6_addresses.iter().enumerate() {
         let mut subnet_data = [0u8; 32];
         subnet_data[0..16].copy_from_slice(ipv6_addr);
         subnet_data[16] = *prefix_len;
@@ -576,6 +577,22 @@ fn write_ipv6_subnets(
     Ok(())
 }
 
+fn write_local_subnets(
+    ipv4: &mut Array<aya::maps::MapData, [u8; 16]>,
+    ipv6: &mut Array<aya::maps::MapData, [u8; 32]>,
+    local: &crate::local_networks::LocalNetworks,
+) -> Result<(), anyhow::Error> {
+    anyhow::ensure!(local.ipv4.len() <= 16, "IPv4 prefix capacity exceeded");
+    for index in 0..16 {
+        let mut row = [0u8; 16];
+        if let Some((ip, mask)) = local.ipv4.get(index) {
+            row[..4].copy_from_slice(ip); row[4..8].copy_from_slice(mask); row[8] = 1;
+        }
+        ipv4.set(index as u32, &row, 0)?;
+    }
+    write_ipv6_subnets(ipv6, &local.ipv6)
+}
+
 // 创建模块上下文：加载 eBPF 程序，配置内核映射，并创建上下文对象
 async fn create_module_contexts(
     options: &Options,
@@ -594,100 +611,32 @@ async fn create_module_contexts(
         if options.enable_traffic() {
             log::info!("Configuring subnet info maps for traffic module...");
 
-            // 配置 IPv4 子网信息映射 (支持多个子网)
             let mut ipv4_subnet_info: Array<_, [u8; 16]> = Array::try_from(ebpf.take_map("QSNP_IPV4_NET").unwrap())?;
-
-            // 初始化所有槽位为空
-            for i in 0..16 {
-                ipv4_subnet_info.set(i, &[0u8; 16], 0)?;
-            }
-
-            let mut subnet_count = 0;
-
-            // 配置接口子网作为第一个子网
-            let mut subnet_data = [0u8; 16];
-            subnet_data[0..4].copy_from_slice(&subnet_info.interface_ip);
-            subnet_data[4..8].copy_from_slice(&subnet_info.subnet_mask);
-            subnet_data[8] = 1; // enabled
-            ipv4_subnet_info.set(subnet_count, &subnet_data, 0)?;
-            log::info!(
-                "Configured IPv4 subnet {}: {}/{} (interface subnet)",
-                subnet_count,
-                format!(
-                    "{}.{}.{}.{}",
-                    subnet_info.interface_ip[0], subnet_info.interface_ip[1], subnet_info.interface_ip[2], subnet_info.interface_ip[3]
-                ),
-                format!(
-                    "{}.{}.{}.{}",
-                    subnet_info.subnet_mask[0], subnet_info.subnet_mask[1], subnet_info.subnet_mask[2], subnet_info.subnet_mask[3]
-                )
-            );
-            subnet_count += 1;
-
-            // 配置额外的子网（从命令行参数）
-            let additional_subnets = options.traffic_additional_subnets().trim();
-            if !additional_subnets.is_empty() {
-                for subnet_cidr in additional_subnets.split(',') {
-                    let subnet_cidr = subnet_cidr.trim();
-                    if subnet_cidr.is_empty() {
-                        continue;
-                    }
-
-                    // 解析 CIDR 格式 (例如 "192.168.2.0/24")
-                    match parse_cidr(subnet_cidr) {
-                        Ok((network_addr, subnet_mask)) => {
-                            if subnet_count >= 16 {
-                                log::warn!("Maximum 16 IPv4 subnets supported, ignoring: {}", subnet_cidr);
-                                break;
-                            }
-
-                            let mut subnet_data = [0u8; 16];
-                            subnet_data[0..4].copy_from_slice(&network_addr);
-                            subnet_data[4..8].copy_from_slice(&subnet_mask);
-                            subnet_data[8] = 1; // enabled
-                            ipv4_subnet_info.set(subnet_count as u32, &subnet_data, 0)?;
-                            log::info!(
-                                "Configured IPv4 subnet {}: {}/{} (additional)",
-                                subnet_count,
-                                format!(
-                                    "{}.{}.{}.{}",
-                                    network_addr[0], network_addr[1], network_addr[2], network_addr[3]
-                                ),
-                                format!("{}.{}.{}.{}", subnet_mask[0], subnet_mask[1], subnet_mask[2], subnet_mask[3])
-                            );
-                            subnet_count += 1;
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to parse subnet CIDR '{}': {}", subnet_cidr, e);
-                        }
-                    }
-                }
-            }
-
-            // 配置 IPv6 子网信息映射
             let mut ipv6_subnet_info: Array<_, [u8; 32]> = Array::try_from(ebpf.take_map("QSNP_IPV6_NET").unwrap())?;
-            write_ipv6_subnets(&mut ipv6_subnet_info, &subnet_info.ipv6_addresses)?;
-
-            // WAN 掉线重拨后 ISP 下发的 PD 前缀可能变化，接口的 IPv6 地址随之更新。
-            // 映射只在启动时写一次的话，内核里留的是旧前缀，新前缀的包会被判为非本地而漏统计
-            // （IPv4 的 LAN 网段不随 WAN 变化，所以只有 IPv6 受影响）。这里定期比对并重写。
+            let mut known = crate::local_networks::read(subnet_info, options.traffic_additional_subnets())?;
+            write_local_subnets(&mut ipv4_subnet_info, &mut ipv6_subnet_info, &known)?;
             let refresh_iface = options.iface().to_string();
-            let mut known_ipv6_addresses = subnet_info.ipv6_addresses.clone();
+            let additional = options.traffic_additional_subnets().to_string();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(30));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
-
-                    let current = crate::utils::network_utils::get_interface_ipv6_info(&refresh_iface);
-                    if current == known_ipv6_addresses {
-                        continue;
-                    }
-
-                    log::info!("IPv6 addresses of {} changed, reconfiguring subnet info maps...", refresh_iface);
-                    match write_ipv6_subnets(&mut ipv6_subnet_info, &current) {
-                        Ok(()) => known_ipv6_addresses = current,
-                        Err(e) => log::warn!("Failed to reconfigure IPv6 subnet info: {}", e),
+                    let current = SubnetInfo::from_interface(&refresh_iface)
+                        .and_then(|own| crate::local_networks::read(&own, &additional));
+                    let update = current.and_then(|current| {
+                        if current != known {
+                            write_local_subnets(&mut ipv4_subnet_info, &mut ipv6_subnet_info, &current)?;
+                            known = current;
+                        }
+                        Ok(())
+                    });
+                    if let Err(error) = update {
+                        // Continuing with an unknown LAN topology could bill
+                        // internal traffic or enforce a WAN rate on another LAN.
+                        log::error!("Local topology unavailable, stopping instance: {error}");
+                        unsafe { libc::kill(libc::getpid(), libc::SIGTERM); }
+                        break;
                     }
                 }
             });
@@ -875,19 +824,18 @@ fn start_neighbor_flush_task(iface: String, interval_secs: u64, shutdown_notify:
 
 // 运行服务
 async fn run_service(options: &Options, _engine_lease: crate::engine_guard::EngineLease) -> Result<(), anyhow::Error> {
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, options.port())).await?;
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_clone = shutdown_notify.clone();
     let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_flag_clone = shutdown_flag.clone();
 
-    let conflict_monitor = crate::engine_guard::start_conflict_monitor(options.iface().to_string(), shutdown_notify.clone());
-
+    let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
     tokio::spawn(async move {
-        if signal::ctrl_c().await.is_ok() {
-            info!("Received shutdown signal, gracefully shutting down...");
-            shutdown_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-            shutdown_notify_clone.notify_waiters();
-        }
+        tokio::select! { _ = signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+        info!("Received shutdown signal, gracefully shutting down...");
+        shutdown_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+        shutdown_notify_clone.notify_waiters();
     });
 
     let subnet_info = SubnetInfo::from_interface(options.iface())?;
@@ -933,6 +881,7 @@ async fn run_service(options: &Options, _engine_lease: crate::engine_guard::Engi
                 data_plane,
                 options.iface(),
             )
+            .map(|engine| engine.with_context(&options.common.network_id, &options.common.instance_id).with_runtime_epoch(&options.common.runtime_epoch))
         }),
         _ => None,
     });
@@ -944,10 +893,9 @@ async fn run_service(options: &Options, _engine_lease: crate::engine_guard::Engi
             Box::new(engine?) as Box<dyn crate::policy::TrafficPolicyEngine + Send>
         )));
     }
-    let options_for_web = options.clone();
     let shutdown_notify_for_web = shutdown_notify.clone();
     let web_task = tokio::spawn(async move {
-        if let Err(e) = web::start_server(options_for_web, api_router, shutdown_notify_for_web).await {
+        if let Err(e) = web::start_server(listener, api_router, shutdown_notify_for_web).await {
             log::error!("Web server error: {}", e);
         }
     });
@@ -962,7 +910,10 @@ async fn run_service(options: &Options, _engine_lease: crate::engine_guard::Engi
     tasks.push(web_task);
     tasks.push(hostname_refresh_task);
     tasks.push(device_refresh_task);
-    tasks.push(conflict_monitor);
+    tasks.push(crate::engine_guard::start_conflict_monitor(
+        options.iface().to_string(),
+        shutdown_notify.clone(),
+    ));
 
     if options.enable_traffic() && options.traffic_neighbor_flush_enable() {
         let neighbor_flush_task = start_neighbor_flush_task(
@@ -974,13 +925,29 @@ async fn run_service(options: &Options, _engine_lease: crate::engine_guard::Engi
     }
 
     // 等待关闭信号
-    shutdown_notify.notified().await;
+    if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        shutdown_notify.notify_waiters();
+    } else {
+        shutdown_notify.notified().await;
+    }
     info!("Stopping all modules...");
 
-    // 等待所有任务完成
-    for task in tasks {
-        if let Err(e) = task.await {
-            log::error!("Module task error: {}", e);
+    // Bound shutdown even if a task missed the early startup signal. Aborting
+    // and joining drops this process's Aya links before the interface lease.
+    let joined = tokio::time::timeout(Duration::from_secs(5), async {
+        for task in &mut tasks {
+            if let Err(error) = task.await {
+                log::error!("Module task error: {}", error);
+            }
+        }
+    })
+    .await;
+    if joined.is_err() {
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
         }
     }
 
@@ -1025,6 +992,7 @@ pub async fn run(options: Options) -> Result<(), anyhow::Error> {
         crate::engine_guard::ensure_no_external_engine(options.iface())?;
     }
 
+    let _data_lease = crate::engine_guard::acquire_data_directory(options.data_dir(), &options.common.network_id, &options.common.instance_id)?;
     let engine_lease = crate::engine_guard::EngineLease::acquire(options.iface())?;
     run_service(&options, engine_lease).await?;
 

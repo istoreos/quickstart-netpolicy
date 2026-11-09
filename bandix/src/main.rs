@@ -4,6 +4,7 @@ mod device;
 mod ebpf;
 mod engine_guard;
 mod monitor;
+mod local_networks;
 pub mod policy;
 mod storage;
 mod system;

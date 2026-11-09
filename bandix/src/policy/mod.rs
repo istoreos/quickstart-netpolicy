@@ -39,7 +39,7 @@ impl std::fmt::Display for PolicyError {
 impl std::error::Error for PolicyError {}
 
 impl PolicyError {
-    fn validation(field: impl Into<String>, message: impl Into<String>) -> Self {
+    pub(crate) fn validation(field: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: PolicyErrorCode::ValidationFailed,
             message: message.into(),
@@ -206,7 +206,18 @@ pub enum EngineHealthState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EngineContext {
+    pub network_id: String,
+    pub instance_id: String,
+    pub epoch: String,
+    pub interface_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EngineHealth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<EngineContext>,
     pub state: EngineHealthState,
     pub interface: String,
     pub revision: u64,

@@ -1,5 +1,4 @@
 use crate::api::{parse_http_request, send_http_response, ApiRouter};
-use crate::command::Options;
 use chrono::Local;
 use log::{debug, error, info};
 use std::sync::Arc;
@@ -13,12 +12,12 @@ pub(crate) const MAX_CONNECTIONS: usize = 32;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // 简单的 HTTP 服务器，仅依赖 tokio
-pub async fn start_server(options: Options, api_router: ApiRouter, shutdown_notify: Arc<tokio::sync::Notify>) -> Result<(), anyhow::Error> {
-    // In release mode, only listen on localhost for security
-    // In debug mode, listen on all interfaces for easier development
-    let host = if cfg!(debug_assertions) { "0.0.0.0" } else { "127.0.0.1" };
-    let addr = format!("{}:{}", host, options.port());
-    let listener = TcpListener::bind(&addr).await?;
+pub async fn start_server(
+    listener: TcpListener,
+    api_router: ApiRouter,
+    shutdown_notify: Arc<tokio::sync::Notify>,
+) -> Result<(), anyhow::Error> {
+    let addr = listener.local_addr()?;
     let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     info!("HTTP server listening on {}", addr);
 

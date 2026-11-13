@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "quickstart-netpolicy"
-version = "0.2.0-test20260928"
+version = "0.2.1-rc20261113"
 dependencies = [
  "anyhow",
  "axum",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "quickstart-netpolicy-common"
-version = "0.2.0-test20260928"
+version = "0.2.1-rc20261113"
 dependencies = [
  "aya",
  "serde",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "quickstart-netpolicy-ebpf"
-version = "0.2.0-test20260928"
+version = "0.2.1-rc20261113"
 dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",

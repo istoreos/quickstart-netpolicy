@@ -4,7 +4,7 @@
 START=91
 STOP=15
 USE_PROCD=1
-PROG=/opt/quickstart-netpolicy/current/quickstart-netpolicy
+PROG=/usr/bin/quickstart-netpolicy
 
 service_triggers() {
  procd_add_reload_trigger quickstart-netpolicy

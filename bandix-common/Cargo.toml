@@ -1,6 +1,6 @@
 [package]
 name = "quickstart-netpolicy-common"
-version = "0.2.0-test20260928"
+version = "0.2.1-rc20261113"
 edition = "2021"
 
 license = { workspace = true }

@@ -36,6 +36,7 @@ ln -sfn "$release" "$base/current.next"
 # BusyBox mv follows a destination symlink to a directory unless -T is used.
 # Without -T, upgrades report success but leave the old release active.
 mv -fT "$base/current.next" "$base/current"
+ln -sfn "$base/current/quickstart-netpolicy" /usr/bin/quickstart-netpolicy
 /etc/init.d/quickstart-netpolicy enable
 /etc/init.d/quickstart-netpolicy restart
 printf 'install=pass release=%s previous=%s\n' "$release" "${current:-none}"
